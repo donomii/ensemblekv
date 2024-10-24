@@ -42,6 +42,10 @@ func EnsembleCreator(directory string, blockSize int, creator func(directory str
 	return NewEnsembleKv(directory, N, blockSize, maxKeys, creator)
 }
 
+func LineLSMCreator(directory string, blockSize int, creator func(directory string, blockSize int) (KvLike, error)) (KvLike, error) {
+	return NewLinelsm(directory, blockSize, 1000, creator)
+}
+
 func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize int, substores int) KvLike {
 	// Initialise.
 

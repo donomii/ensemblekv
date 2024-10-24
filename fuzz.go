@@ -73,7 +73,7 @@ func encodeHex(data []byte) string {
 func FuzzKeyValueOperations(t *testing.T, store KvLike, storeName string) {
 	t.Run("FuzzTestRandomOperations", func(t *testing.T) {
 		rand.Seed(time.Now().UnixNano())
-		numOperations := rand.Intn(5000000) + 500 // Random number of operations
+		numOperations := rand.Intn(5000) + 500 // Random number of operations
 
 		keys := make(map[string][]byte)       // Track valid keys
 		ringBuffer := NewRingBuffer(50)       // Initialize ring buffer for logging

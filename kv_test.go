@@ -20,6 +20,12 @@ func TestEnsembleExtentStore(t *testing.T) {
 	}, "EnsembleExtentStore")
 }
 
+func TestLineLSMExtentStore(t *testing.T) {
+	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
+		return EnsembleCreator(directory, blockSize, ExtentCreator)
+	}, "EnsembleExtentStore")
+}
+
 func TestEnsembleBarrelDbStore(t *testing.T) {
 	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
 		return EnsembleCreator(directory, blockSize, BarrelDbCreator)
