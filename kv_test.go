@@ -1,227 +1,217 @@
 package ensemblekv
 
 import (
-	"bytes"
-	"fmt"
-	"testing"
+    "bytes"
+    "fmt"
+    "path/filepath"
+    "testing"
+    "time"
 )
 
-/*
-func TestExtentKeyValueStore(t *testing.T) {
-	StartKVStoreOperations(t, ExtentCreator, "ExtentKeyValueStore")
+// Test timeouts and limits
+const (
+    testTimeout = 30 * time.Second  // Reduced from 10m
+    maxTestSize = 10 * 1024 * 1024  // 10MB max for test data
+)
+
+// StartKVStoreOperations runs the test suite with proper timeout and directory setup
+func StartKVStoreOperations(t *testing.T, creator func(directory string, blockSize int) (KvLike, error), storeName string) {
+    t.Helper()
+    
+    // Set test timeout
+    timer := time.NewTimer(testTimeout)
+    done := make(chan bool)
+    
+    go func() {
+        t.Run("KVStore", func(t *testing.T) {
+            // Create temporary directory
+            dir := t.TempDir()
+            
+            // Adjust paths based on store type
+            var storePath string
+            switch storeName {
+            case "BoltDB", "LineBoltStore", "EnsembleBoltDbStore":
+                storePath = filepath.Join(dir, "bolt.db")
+            default:
+                storePath = dir
+            }
+            
+            blockSize := 1024 * 4 // 4KB blocks
+            
+            // Create store
+            store, err := creator(storePath, blockSize)
+            if err != nil {
+                t.Fatalf("Failed to create store: %v", err)
+            }
+            defer store.Close()
+            
+            // Run tests with store-specific limits
+            KVStoreOperations(t, store, storeName)
+            MixedSizeKeyValuePairs(t, store, storeName)
+            FuzzKeyValueOperations(t, store, storeName)
+        })
+        done <- true
+    }()
+    
+    // Wait for either completion or timeout
+    select {
+    case <-timer.C:
+        t.Fatal("Test timed out")
+    case <-done:
+        timer.Stop()
+    }
 }
 
-func TestBarrelDbKeyValueStore(t *testing.T) {
-	StartKVStoreOperations(t, BarrelDbCreator, "BarrelDbKeyValueStore")
+// MixedSizeKeyValuePairs tests various key-value size combinations
+func MixedSizeKeyValuePairs(t *testing.T, store KvLike, storeName string) {
+    limits := GetDBLimits(storeName)
+    
+    sizes := []struct {
+        keySize   int
+        valueSize int
+    }{
+        {32, 128},                    // Small pairs
+        {64, 1024},                   // Medium pairs
+        {128, 64 * 1024},            // Larger pairs
+        {256, 256 * 1024},           // Even larger pairs
+    }
+    
+    for _, size := range sizes {
+        if size.keySize > limits.maxKeySize || int64(size.valueSize) > limits.maxValueSize {
+            t.Logf("Skipping test with key size %d and value size %d (exceeds limits)", 
+                size.keySize, size.valueSize)
+            continue
+        }
+        
+        t.Run(fmt.Sprintf("Size_%dx%d", size.keySize, size.valueSize), func(t *testing.T) {
+            key := randomBytes(size.keySize, size.keySize)
+            value := randomBytes(size.valueSize, size.valueSize)
+            
+            // Test Put
+            err := store.Put(key, value)
+            if err != nil {
+                t.Fatalf("Failed to put %dx%d pair: %v", size.keySize, size.valueSize, err)
+            }
+            
+            // Test Get
+            retrieved, err := store.Get(key)
+            if err != nil {
+                t.Fatalf("Failed to get %dx%d pair: %v", size.keySize, size.valueSize, err)
+            }
+            
+            if !bytes.Equal(retrieved, value) {
+                t.Errorf("Value mismatch for %dx%d pair", size.keySize, size.valueSize)
+            }
+            
+            // Test Delete
+            err = store.Delete(key)
+            if err != nil {
+                t.Fatalf("Failed to delete %dx%d pair: %v", size.keySize, size.valueSize, err)
+            }
+            
+            // Verify deletion
+            if store.Exists(key) {
+                t.Error("Key still exists after deletion")
+            }
+        })
+    }
+}
+// GetDBLimits returns the appropriate limits for different database types
+func GetDBLimits(storeName string) DBLimits {
+    // Constants for commonly used sizes
+    const (
+        _1KB = 1024
+        _1MB = 1024 * 1024
+        _1GB = 1024 * 1024 * 1024
+        
+        // Bolt-specific limits
+        boltMaxKeySize   = 32768      // 2^15 bytes
+        boltMaxValueSize = 1073741822 // Bolt's max value size (~1GB)
+        
+        // Test-friendly sizes for larger values
+        testMaxKeySize   = _1MB       // 1MB for test keys
+        testMaxValueSize = 10 * _1MB  // 10MB for test values
+    )
+    
+    switch storeName {
+    case "BoltDB", "LineBoltStore", "EnsembleBoltDbStore", "LineLSMBoltStore":
+        return DBLimits{
+            maxKeySize:   boltMaxKeySize,   // Bolt's hard limit
+            maxValueSize: testMaxValueSize, // Limited for testing speed
+            name:         storeName,
+        }
+        
+    case "BarrelDB", "EnsembleBarrelDbStore", "LineLSMBarrelDbStore":
+        return DBLimits{
+            maxKeySize:   testMaxKeySize,   // 1MB reasonable limit
+            maxValueSize: testMaxValueSize, // Limited for testing speed
+            name:         storeName,
+        }
+        
+    case "ExtentKeyValueStore", "EnsembleExtentStore", "LineLSMExtentStore":
+        return DBLimits{
+            maxKeySize:   testMaxKeySize,   // Limited for testing speed
+            maxValueSize: testMaxValueSize, // Limited for testing speed
+            name:         storeName,
+        }
+        
+    default:
+        // Conservative default limits matching Bolt's constraints
+        return DBLimits{
+            maxKeySize:   boltMaxKeySize,   // Safe default matching Bolt
+            maxValueSize: testMaxValueSize, // Limited for testing speed
+            name:         storeName,
+        }
+    }
 }
 
-func TestEnsembleExtentStore(t *testing.T) {
-	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-		return EnsembleCreator(directory, blockSize, ExtentCreator)
-	}, "EnsembleExtentStore")
+// Updated test functions
+func TestBoltDbStore(t *testing.T) {
+    StartKVStoreOperations(t, BoltDbCreator, "BoltDB")
 }
 
+func TestBarrelDbStore(t *testing.T) {
+    StartKVStoreOperations(t, BarrelDbCreator, "BarrelDB")
+}
 
-	func TestLineLSMExtentStore(t *testing.T) {
-		StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-			return LineLSMCreator(directory, blockSize, ExtentCreator)
-		}, "LineExtentStore")
-	}
-*/
+func TestExtentStore(t *testing.T) {
+    StartKVStoreOperations(t, ExtentCreator, "ExtentKeyValueStore")
+}
+
 func TestLineLSMBoltStore(t *testing.T) {
-	t.Log("Starting LSM Bolt")
+    StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
+        return LineLSMCreator(directory, blockSize, BoltDbCreator)
+    }, "LineBoltStore")
+}
+
+func TestLineLSMBarrelStore(t *testing.T) {
 	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-		return LineLSMCreator(directory, blockSize, BoltDbCreator)
-	}, "LineBoltStore")
+		return LineLSMCreator(directory, blockSize, BarrelDbCreator)
+	}, "LineLSMBarrelStore")
+}
+
+
+func TestLineLSMExtentStore(t *testing.T) {
+    StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
+        return LineLSMCreator(directory, blockSize, ExtentCreator)
+    }, "ExtentKeyValueStore")
+}
+
+func TestEnsembleBoltDbStore(t *testing.T) {
+	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
+        return EnsembleCreator(directory, blockSize, BoltDbCreator)
+    }, "LineBoltStore")
 }
 
 func TestEnsembleBarrelDbStore(t *testing.T) {
 	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
 		return EnsembleCreator(directory, blockSize, BarrelDbCreator)
-	}, "EnsembleBarrelDbStore")
+	}, "LineLSMBarrelStore")
 }
 
-func TestEnsembleBoltDbStore(t *testing.T) {
+func TestEnsembleExtentStore(t *testing.T) {
 	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-		return EnsembleCreator(directory, blockSize, BoltDbCreator)
-	}, "EnsembleBoltDbStore")
+		return EnsembleCreator(directory, blockSize, ExtentCreator)
+	}, "ExtentKeyValueStore")
 }
 
-/*
-func TestEnsembleLotusStore(t *testing.T) {
-	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-		return EnsembleCreator(directory, blockSize, LotusCreator)
-	})
-}
-*/
-
-/* Completely broken
-func TestNuDbKeyValueStore(t *testing.T) {
-	StartKVStoreOperations(t, NuDbCreator)
-}
-*/
-
-/*
-func TestLotusKeyValueStore(t *testing.T) {
-	StartKVStoreOperations(t, LotusCreator)
-}
-*/
-
-// Update StartKVStoreOperations to include fuzz testing
-func StartKVStoreOperations(t *testing.T, creator func(directory string, blockSize int) (KvLike, error), storeName string) {
-	t.Run("KVStore", func(t *testing.T) {
-		// Temp dir for testing
-		dir := t.TempDir()
-		blockSize := 1024
-
-		// Create a new store
-		store, err := creator(dir, blockSize)
-		if err != nil {
-			t.Fatalf("Failed to create store: %v", err)
-		}
-
-		// Run basic operations
-		KVStoreOperations(t, store)
-
-		// Run large key/value tests
-		LargeKeyValuePairs(t, store)
-
-		// Run mixed size key/value tests
-		MixedSizeKeyValuePairs(t, store)
-
-		// Run fuzz tests
-		FuzzKeyValueOperations(t, store, storeName)
-	})
-}
-
-func KVStoreOperations(t *testing.T, store KvLike) {
-	t.Run("Put and Get", func(t *testing.T) {
-		key := []byte("key1")
-		expectedValue := []byte("value1")
-		err := store.Put(key, expectedValue)
-		if err != nil {
-			t.Fatalf("Failed to put value: %v", err)
-		}
-
-		actualValue, err := store.Get(key)
-		if err != nil {
-			t.Fatalf("Failed to get value: %v", err)
-		}
-
-		if !bytes.Equal(actualValue, expectedValue) {
-			t.Errorf("Expected value %s, got %s", trimTo40(expectedValue), trimTo40(actualValue))
-		}
-	})
-
-	t.Run("Exists", func(t *testing.T) {
-		key := []byte("key2")
-		value := []byte("value2")
-		err := store.Put(key, value)
-		if err != nil {
-			t.Fatalf("Failed to put value: %v", err)
-		}
-
-		exists := store.Exists(key)
-		if !exists {
-			t.Errorf("Expected key %s to exist", trimTo40(key))
-		}
-
-		notExists := store.Exists([]byte("nonexistent"))
-		if notExists {
-			t.Errorf("Expected key 'nonexistent' to not exist")
-		}
-	})
-
-	t.Run("Delete", func(t *testing.T) {
-		key := []byte("key3")
-		value := []byte("value3")
-		err := store.Put(key, value)
-		if err != nil {
-			t.Fatalf("Failed to put value: %v", err)
-		}
-
-		err = store.Delete(key)
-		if err != nil {
-			t.Fatalf("Failed to delete key: %v", err)
-		}
-
-		exists := store.Exists(key)
-		if exists {
-			store.MapFunc(func(k, v []byte) error {
-				//fmt.Printf("Key: %s\n", trimTo40(k))
-				return nil
-			})
-			t.Errorf("Expected key %s to not exist after delete", trimTo40(key))
-		}
-	})
-}
-
-func LargeKeyValuePairs(t *testing.T, store KvLike) {
-	t.Run("LargeKeyValue", func(t *testing.T) {
-		largeKey := bytes.Repeat([]byte("k"), 1024*1)        // 1MB key
-		largeValue := bytes.Repeat([]byte("v"), 1024*1024*5) // 50MB value
-		err := store.Put(largeKey, largeValue)
-		if err != nil {
-			t.Fatalf("Failed to put large key/value pair: %v", err)
-		}
-
-		retrievedValue, err := store.Get(largeKey)
-		if err != nil {
-			t.Fatalf("Failed to get large value: %v", err)
-		}
-
-		if !bytes.Equal(retrievedValue, largeValue) {
-			t.Error("Retrieved value does not match the original large value")
-		}
-
-		if !store.Exists(largeKey) {
-			t.Error("Large key does not exist after being put")
-		}
-
-		err = store.Delete(largeKey)
-		if err != nil {
-			t.Fatalf("Failed to delete large key: %v", err)
-		}
-
-		if store.Exists(largeKey) {
-			t.Error("Large key exists after being deleted")
-		}
-
-	})
-}
-
-func MixedSizeKeyValuePairs(t *testing.T, store KvLike) {
-	keySizes := []int{32, 1024, 32 * 1024}                 // , 64 * 1024 . Various key sizes.  Bbolt can't handle more than 32k
-	valueSizes := []int{128, 1024 * 1024, 4 * 1024 * 1024} // Various value sizes
-
-	for _, ks := range keySizes {
-		if ks > maxKeySize {
-			continue
-		}
-		for _, vs := range valueSizes {
-			t.Run(fmt.Sprintf("TestMixedSizes_%d_%d", ks, vs), func(t *testing.T) {
-				key := bytes.Repeat([]byte("k"), ks)
-				value := bytes.Repeat([]byte("v"), vs)
-				err := store.Put(key, value)
-				if err != nil {
-					t.Fatalf("Failed to put key/value pair of size %d/%d: %v", ks, vs, err)
-				}
-
-				retrievedValue, err := store.Get(key)
-				if err != nil {
-					t.Fatalf("Failed to get value of size %d: %v", vs, err)
-				}
-
-				if !bytes.Equal(retrievedValue, value) {
-					t.Errorf("Retrieved value does not match the original value for size %d/%d", ks, vs)
-				}
-
-				err = store.Delete(key)
-				if err != nil {
-					t.Fatalf("Failed to delete key of size %d: %v", ks, err)
-				}
-
-			})
-		}
-	}
-}

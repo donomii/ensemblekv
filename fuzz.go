@@ -1,155 +1,263 @@
 package ensemblekv
 
 import (
-	"bytes"
-	"math/rand"
-	"testing"
-	"time"
-	"fmt"
-	"encoding/hex"
+    "bytes"
+    "fmt"
+    "math/rand"
+    "testing"
+    "time"
+    "encoding/hex"
 )
-var runs = 50
-var maxKeySize = 32000
+
+// DBLimits defines the size constraints for different database types
+type DBLimits struct {
+    maxKeySize   int
+    maxValueSize int64
+    name         string
+}
 
 
-// Helper to generate random byte slices
-func randomBytes(size int) []byte {
-	data := make([]byte, size)
-	rand.Read(data)
-	return data
+// Fuzz test parameters
+const (
+    minOperations = 50
+    maxOperations = 100
+    minKeySize    = 1
+    minValueSize  = 1
+)
+
+// Helper to generate random byte slices with size constraints
+func randomBytes(minSize, maxSize int) []byte {
+    var size int
+    if minSize == maxSize {
+        size = minSize // If min and max are equal, use that size
+    } else if minSize < maxSize {
+        size = rand.Intn(maxSize-minSize+1) + minSize // Add 1 to make maxSize inclusive
+    } else {
+        // Handle invalid input by using minSize
+        size = minSize
+    }
+    
+    data := make([]byte, size)
+    rand.Read(data)
+    return data
 }
 
 // Helper function to trim byte slices for display
 func trimTo40(data []byte) string {
-	if len(data) > 40 {
-		return fmt.Sprintf("%s...", data[:40])
-	}
-	return string(data)
+    if len(data) > 40 {
+        return fmt.Sprintf("%s...", hex.EncodeToString(data[:40]))
+    }
+    return hex.EncodeToString(data)
 }
+
 // LogEntry holds information about each operation
 type LogEntry struct {
-	OpNum       int    // Operation number to indicate order
-	Operation   string // Type of operation: Put, Get, Delete
-	Key         string // Key used in the operation
-	Value       string // Value used (if applicable)
-	Description string // Additional info about the operation
+    OpNum       int
+    Operation   string
+    Key         string
+    Value       string
+    Description string
 }
 
 // RingBuffer keeps the last 50 operations
 type RingBuffer struct {
-	entries []LogEntry
-	index   int
-	size    int
+    entries []LogEntry
+    index   int
+    size    int
 }
 
-// NewRingBuffer initializes a ring buffer with a fixed size of 50
 func NewRingBuffer(size int) *RingBuffer {
-	return &RingBuffer{
-		entries: make([]LogEntry, size),
-		size:    size,
-	}
+    return &RingBuffer{
+        entries: make([]LogEntry, size),
+        size:    size,
+    }
 }
 
-// Add adds a new log entry to the ring buffer
 func (rb *RingBuffer) Add(entry LogEntry) {
-	rb.entries[rb.index] = entry
-	rb.index = (rb.index + 1) % rb.size
+    rb.entries[rb.index] = entry
+    rb.index = (rb.index + 1) % rb.size
 }
 
-// Dump prints the contents of the ring buffer for debugging
 func (rb *RingBuffer) Dump() {
-	fmt.Println("Operation log (last 50 operations):")
-	for i := 0; i < rb.size; i++ {
-		entry := rb.entries[(rb.index+i)%rb.size]
-		if entry.Operation != "" {
-			fmt.Printf("#%03d [%s] Key: %s, Value: %s, Description: %s\n",
-				entry.OpNum, entry.Operation, trimTo40([]byte(entry.Key)), trimTo40([]byte(entry.Value)), entry.Description)
-		}
-	}
-}
-
-// Helper function to hex-encode a byte slice for clearer logging
-func encodeHex(data []byte) string {
-	return hex.EncodeToString(data)
+    fmt.Println("\nOperation log (last 50 operations):")
+    for i := 0; i < rb.size; i++ {
+        entry := rb.entries[(rb.index+i)%rb.size]
+        if entry.Operation != "" {
+            fmt.Printf("#%03d [%s] Key: %s, Value: %s, Description: %s\n",
+                entry.OpNum, entry.Operation, entry.Key, entry.Value, entry.Description)
+        }
+    }
 }
 
 func FuzzKeyValueOperations(t *testing.T, store KvLike, storeName string) {
-	t.Run("FuzzTestRandomOperations", func(t *testing.T) {
-		rand.Seed(time.Now().UnixNano())
-		numOperations := rand.Intn(runs) + runs // Random number of operations
+    limits := GetDBLimits(storeName)
+    
+    t.Run("FuzzTestRandomOperations", func(t *testing.T) {
+        rand.Seed(time.Now().UnixNano())
+        numOperations := rand.Intn(maxOperations-minOperations) + minOperations
 
-		keys := make(map[string][]byte)       // Track valid keys
-		ringBuffer := NewRingBuffer(50)       // Initialize ring buffer for logging
+        keys := make(map[string][]byte)
+        ringBuffer := NewRingBuffer(50)
 
-		for i := 0; i < numOperations; i++ {
-			operation := rand.Intn(3)      // 0 = Put, 1 = Get, 2 = Delete
-			keySize := rand.Intn(1024) + 1 // Random key size
-			valueSize := rand.Intn(4096) + 1 // Random value size
+        for i := 0; i < numOperations; i++ {
+            operation := rand.Intn(3) // 0 = Put, 1 = Get, 2 = Delete
+            
+            // Generate size within DB limits
+            keySize := rand.Intn(limits.maxKeySize-minKeySize) + minKeySize
+            valueSize := rand.Intn(int(limits.maxValueSize/2)-minValueSize) + minValueSize
 
-			key := randomBytes(keySize)
-			value := randomBytes(valueSize)
+            switch operation {
+            case 0: // Put
+                key := randomBytes(minKeySize, keySize)
+                value := randomBytes(minValueSize, valueSize)
+                
+                err := store.Put(key, value)
+                ringBuffer.Add(LogEntry{i + 1, "Put", trimTo40(key), trimTo40(value), "Put operation"})
 
-			switch operation {
-			case 0: // Put operation
-				err := store.Put(key, value)
-				ringBuffer.Add(LogEntry{i + 1, "Put", encodeHex(key), encodeHex(value), "Put operation"})
+                if err != nil {
+                    ringBuffer.Dump()
+                    t.Fatalf("[%s] Failed to put key/value pair: %v", limits.name, err)
+                }
+                keys[string(key)] = value
 
-				if err != nil {
-					ringBuffer.Dump()
-					t.Fatalf("[%s] Failed to put key/value pair: %v", storeName, err)
-				}
-				keys[string(key)] = value
+            case 1: // Get
+                if len(keys) == 0 {
+                    continue
+                }
+                
+                randomKey := getRandomKey(keys)
+                expectedValue := keys[randomKey]
 
-			case 1: // Get operation
-				if len(keys) == 0 {
-					continue // No keys to get
-				}
-				randomKey := getRandomKey(keys)
-				expectedValue := keys[randomKey]
+                retrievedValue, err := store.Get([]byte(randomKey))
+                ringBuffer.Add(LogEntry{i + 1, "Get", trimTo40([]byte(randomKey)), trimTo40(expectedValue), "Get operation"})
 
-				retrievedValue, err := store.Get([]byte(randomKey))
-				ringBuffer.Add(LogEntry{i + 1, "Get", encodeHex([]byte(randomKey)), encodeHex(expectedValue), "Get operation"})
+                if err != nil {
+                    ringBuffer.Dump()
+                    store.DumpIndex()
+                    t.Fatalf("[%s] Failed to get key: %s, %v", limits.name, trimTo40([]byte(randomKey)), err)
+                }
 
-				if err != nil {
-					ringBuffer.Dump()
-					store.DumpIndex()
-					t.Fatalf("[%s] Failed to get key: %s, %v", storeName, encodeHex([]byte(randomKey)), err)
-				}
+                if !bytes.Equal(retrievedValue, expectedValue) {
+                    ringBuffer.Dump()
+                    t.Errorf("[%s] Value mismatch for key %s. Expected: %s, Got: %s",
+                        limits.name, trimTo40([]byte(randomKey)), trimTo40(expectedValue), trimTo40(retrievedValue))
+                }
 
-				if !bytes.Equal(retrievedValue, expectedValue) {
-					ringBuffer.Dump()
-					t.Errorf("[%s] Expected value %s, got %s", storeName, encodeHex(expectedValue), encodeHex(retrievedValue))
-				}
+            case 2: // Delete
+                if len(keys) == 0 {
+                    continue
+                }
+                
+                randomKey := getRandomKey(keys)
 
-			case 2: // Delete operation
-				if len(keys) == 0 {
-					continue // No keys to delete
-				}
-				randomKey := getRandomKey(keys)
+                err := store.Delete([]byte(randomKey))
+                ringBuffer.Add(LogEntry{i + 1, "Delete", trimTo40([]byte(randomKey)), "", "Delete operation"})
 
-				err := store.Delete([]byte(randomKey))
-				ringBuffer.Add(LogEntry{i + 1, "Delete", encodeHex([]byte(randomKey)), "", "Delete operation"})
+                if err != nil {
+                    ringBuffer.Dump()
+                    t.Fatalf("[%s] Failed to delete key: %v", limits.name, err)
+                }
 
-				if err != nil {
-					ringBuffer.Dump()
-					t.Fatalf("[%s] Failed to delete key: %v", storeName, err)
-				}
+                delete(keys, randomKey)
 
-				delete(keys, randomKey)
-
-				if store.Exists([]byte(randomKey)) {
-					ringBuffer.Dump()
-					t.Errorf("[%s] Expected key %s to not exist after deletion", storeName, encodeHex([]byte(randomKey)))
-				}
-			}
-		}
-	})
+                if store.Exists([]byte(randomKey)) {
+                    ringBuffer.Dump()
+                    t.Errorf("[%s] Key %s still exists after deletion", limits.name, trimTo40([]byte(randomKey)))
+                }
+            }
+        }
+    })
 }
 
 // Helper to get a random key from the map
 func getRandomKey(m map[string][]byte) string {
-	for k := range m {
-		return k
-	}
-	return ""
+    for k := range m {
+        return k
+    }
+    return ""
+}
+
+// KVStoreOperations performs basic operations test with DB-specific limits
+func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
+    limits := GetDBLimits(storeName)
+
+    t.Run("Basic Put and Get", func(t *testing.T) {
+        key := []byte("test_key")
+        value := []byte("test_value")
+        
+        err := store.Put(key, value)
+        if err != nil {
+            t.Fatalf("Failed to put value: %v", err)
+        }
+
+        retrieved, err := store.Get(key)
+        if err != nil {
+            t.Fatalf("Failed to get value: %v", err)
+        }
+
+        if !bytes.Equal(retrieved, value) {
+            t.Errorf("Value mismatch. Expected %s, got %s", value, retrieved)
+        }
+    })
+
+    t.Run("Large Key-Value Pairs", func(t *testing.T) {
+        keySize := limits.maxKeySize / 2
+        valueSize := int(limits.maxValueSize / 2)
+
+        key := randomBytes(minKeySize, keySize)
+        value := randomBytes(minValueSize, valueSize)
+
+        err := store.Put(key, value)
+        if err != nil {
+            t.Fatalf("Failed to put large key/value pair: %v", err)
+        }
+
+        retrieved, err := store.Get(key)
+        if err != nil {
+            t.Fatalf("Failed to get large value: %v", err)
+        }
+
+        if !bytes.Equal(retrieved, value) {
+            t.Error("Retrieved large value does not match original")
+        }
+    })
+
+    t.Run("Mixed Size Operations", func(t *testing.T) {
+        sizes := []struct {
+            keySize   int
+            valueSize int
+        }{
+            {32, 128},
+            {64, 1024},
+            {128, 1024 * 1024},
+        }
+
+        for _, size := range sizes {
+            if size.keySize > limits.maxKeySize || int64(size.valueSize) > limits.maxValueSize {
+                t.Logf("Skipping test with key size %d and value size %d as it exceeds DB limits",
+                    size.keySize, size.valueSize)
+                continue
+            }
+
+            key := randomBytes(minKeySize, size.keySize)
+            value := randomBytes(minValueSize, size.valueSize)
+
+            err := store.Put(key, value)
+            if err != nil {
+                t.Fatalf("Failed to put key/value pair of size %d/%d: %v",
+                    size.keySize, size.valueSize, err)
+            }
+
+            retrieved, err := store.Get(key)
+            if err != nil {
+                t.Fatalf("Failed to get value of size %d: %v",
+                    size.valueSize, err)
+            }
+
+            if !bytes.Equal(retrieved, value) {
+                t.Errorf("Value mismatch for size %d/%d",
+                    size.keySize, size.valueSize)
+            }
+        }
+    })
 }
