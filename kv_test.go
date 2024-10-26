@@ -17,7 +17,7 @@ const (
 // StartKVStoreOperations runs the test suite with proper timeout and directory setup
 func StartKVStoreOperations(t *testing.T, creator func(directory string, blockSize int) (KvLike, error), storeName string) {
     t.Helper()
-    
+
     // Set test timeout
     timer := time.NewTimer(testTimeout)
     done := make(chan bool)
@@ -134,7 +134,7 @@ func GetDBLimits(storeName string) DBLimits {
     )
     
     switch storeName {
-    case "BoltDB", "LineBoltStore", "EnsembleBoltDbStore", "LineLSMBoltStore":
+    case "BoltDB", "LineBoltStore", "EnsembleBoltDbStore", "LineLSMBoltStore", "TreeLSMBoltStore":
         return DBLimits{
             maxKeySize:   boltMaxKeySize,   // Bolt's hard limit
             maxValueSize: testMaxValueSize, // Limited for testing speed
@@ -212,6 +212,25 @@ func TestEnsembleBarrelDbStore(t *testing.T) {
 func TestEnsembleExtentStore(t *testing.T) {
 	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
 		return EnsembleCreator(directory, blockSize, ExtentCreator)
-	}, "ExtentKeyValueStore")
+	}, "EnsembleExtentKeyValueStore")
 }
+
+func TestTreeLSMBoltStore(t *testing.T) {
+	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
+		return NewTreeLSM(directory, blockSize, BoltDbCreator)
+	}, "TreeLSMBoltStore")
+}
+
+func TestTreeLSMBarrelStore(t *testing.T) {
+	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
+		return NewTreeLSM(directory, blockSize, BarrelDbCreator)
+	}, "TreeLSMBarrelStore")
+}
+
+func TestTreeLSMExtentStore(t *testing.T) {
+	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
+		return NewTreeLSM(directory, blockSize, ExtentCreator)
+	}, "TreeExtentKeyValueStore")
+}
+
 
