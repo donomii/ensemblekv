@@ -165,6 +165,21 @@ func NewNuDbShim(filename string, blockSize int) (*nuDbShim, error) {
 	return &s, nil
 }
 
+// For NuDbShim:
+func (s *nuDbShim) Size() int64 {
+    var count int64
+    // NuDB doesn't provide a direct way to count entries
+    // We'll need to iterate through the store
+    _, err := s.MapFunc(func(k, v []byte) error {
+        count++
+        return nil
+    })
+    if err != nil {
+        return 0
+    }
+    return count
+}
+
 func (s *nuDbShim) Get(key []byte) ([]byte, error) {
 	return s.dbHandle.Fetch(string(key))
 }
@@ -233,6 +248,12 @@ func NewBarrelShim(filename string, blockSize int) (*barrelShim, error) {
 	s.dbHandle = b
 
 	return &s, nil
+}
+
+func (s *barrelShim) Size() int64 {
+    // BarrelDB provides a List() method that returns all keys
+    keys := s.dbHandle.List()
+    return int64(len(keys))
 }
 
 func (s *barrelShim) Get(key []byte) ([]byte, error) {
@@ -451,4 +472,17 @@ func (s *BoltDbShim) List() ([]string, error) {
 		return nil
 	})
 	return keys, nil
+}
+
+func (s *BoltDbShim) Size() int64 {
+    var count int64
+    s.boltHandle.View(func(tx *bolt.Tx) error {
+        b := tx.Bucket([]byte("Blocks"))
+        c := b.Cursor()
+        for k, _ := c.First(); k != nil; k, _ = c.Next() {
+            count++
+        }
+        return nil
+    })
+    return count
 }

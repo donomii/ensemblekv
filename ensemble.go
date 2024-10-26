@@ -22,6 +22,7 @@ type KvLike interface {
 	Put(key []byte, val []byte) error
 	Exists(key []byte) bool
 	Delete(key []byte) error
+	Size() int64
 	Flush() error
 	Close() error
 	MapFunc(f func([]byte, []byte) error) (map[string]bool, error)
@@ -34,6 +35,7 @@ type DefaultOps struct {
 func (d *DefaultOps) DumpIndex() error {
 	return nil
 }
+
 
 
 // HashFunc is the type of function used to hash keys for consistent hashing.
@@ -114,6 +116,8 @@ func defaultHashFunc(data []byte) uint64 {
 	}
 	return uint64(value)
 }
+
+
 
 // hashToIndex maps a hash value to an index of a substore.
 func (s *EnsembleKv) hashToIndex(hash uint64) int {
@@ -351,4 +355,16 @@ func lockFreeMapFunc(substores []KvLike, f func(key []byte, value []byte) error)
 	}
 
 	return nil, nil // Return nil if the operation completes successfully on all substores
+}
+
+// Size returns the total number of keys in the store.
+func (s *EnsembleKv) Size() int64 {
+    s.mutex.Lock()
+    defer s.mutex.Unlock()
+    
+    var total int64
+    for _, substore := range s.substores {
+        total += substore.Size()
+    }
+    return total
 }

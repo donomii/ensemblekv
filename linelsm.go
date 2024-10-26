@@ -1,263 +1,449 @@
 package ensemblekv
 
-
 import (
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"strings"
+	"sync"
+	"time"
 )
 
+// Constants for store configuration
 const (
-	dataPrefix      = "__data__:"      // Prefix for normal keys
-	tombstonePrefix = "__tombstone__:" // Prefix for tombstone keys
+	dataPrefix      = "d:" // Shortened prefix for data entries
+	tombstonePrefix = "t:" // Shortened prefix for tombstones
+	metadataFile    = "metadata.json"
 )
 
+// TierMetadata stores information about a single tier
+type TierMetadata struct {
+	Level     int      `json:"level"`
+	StoreIds  []string `json:"store_ids"`
+	TotalSize int64    `json:"total_size"`
+}
+
+// StoreMetadata represents the persistent state of the LSM store
+type StoreMetadata struct {
+	Tiers        []TierMetadata `json:"tiers"`
+	MaxTierSizes []int64        `json:"max_tier_sizes"`
+	LastFlush    time.Time      `json:"last_flush"`
+}
+
+// And in the Linelsm struct, add blockSize:
 type Linelsm struct {
 	DefaultOps
-	directory       string
-	currentDir      int               // Current active directory number
-	stores          []KvLike          // Open stores (newest first for reads)
-	mutex           sync.Mutex        // Mutex for thread safety
-	maxBlock        int               // Max block size per store
-	maxKeysPerStore int               // Max keys allowed per store before rotation
-	currentKeyCount int               // Current number of keys in the active store
-	createStore     func(path string, blockSize int) (KvLike, error)
+	directory     string
+	tiers         [][]KvLike
+	metadata      StoreMetadata
+	mutex         sync.RWMutex
+	maxKeys       int
+	blockSize     int // Added this field
+	maxTierSizes  []int64
+	createStore   func(path string, blockSize int) (KvLike, error)
+	flushInterval time.Duration
+	closed        chan struct{}
 }
 
-// NewLinelsm initializes the linelsm database.
-func NewLinelsm(directory string, maxBlock, maxKeysPerStore int, createStore func(path string, blockSize int) (KvLike, error)) (*Linelsm, error) {
+// NewLinelsm initializes the LSM store with improved configuration
+func NewLinelsm(
+	directory string,
+	blockSize int,
+	maxKeys int,
+	createStore func(path string, blockSize int) (KvLike, error),
+) (*Linelsm, error) {
+	store := &Linelsm{
+		directory:     directory,
+		maxKeys:       maxKeys,
+		createStore:   createStore,
+		tiers:         make([][]KvLike, 4), // Start with 4 tiers
+		flushInterval: time.Minute * 5,
+		closed:        make(chan struct{}),
+		maxTierSizes: []int64{
+			64 * 1024 * 1024,   // Tier 0: 64MB
+			256 * 1024 * 1024,  // Tier 1: 256MB
+			1024 * 1024 * 1024, // Tier 2: 1GB
+			4096 * 1024 * 1024, // Tier 3: 4GB
+		},
+	}
+
+	// Store blockSize for use in createStore calls
+	store.blockSize = blockSize
+
+	// Ensure the root directory exists
 	if err := os.MkdirAll(directory, os.ModePerm); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create root directory: %w", err)
 	}
 
-	lsm := &Linelsm{
-		directory:       directory,
-		maxBlock:        maxBlock,
-		maxKeysPerStore: maxKeysPerStore,
-		createStore:     createStore,
+	// Load or initialize metadata
+	if err := store.loadMetadata(); err != nil {
+		return nil, fmt.Errorf("failed to load metadata: %w", err)
 	}
 
-	if err := lsm.loadMetadata(); err != nil {
-		return nil, err
-	}
+	// Start background maintenance
+	go store.backgroundMaintenance()
 
-	if err := lsm.openCurrentStore(); err != nil {
-		return nil, err
-	}
-
-	return lsm, nil
+	return store, nil
 }
-// Exists checks if a key exists, respecting tombstones.
-func (l *Linelsm) Exists(key []byte) bool {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
 
-	tombstoneKey := tombstonePrefix + string(key)
-	dataKey := dataPrefix + string(key)
-
-	// Check for a tombstone in any store (newest to oldest)
-	for _, store := range l.stores {
-		if store.Exists([]byte(tombstoneKey)) {
-			return false // Key is tombstoned
-		}
+// Update getOrCreateActiveStore to use blockSize:
+func (l *Linelsm) getOrCreateActiveStore(tier int) (KvLike, error) {
+	if tier >= len(l.tiers) {
+		return nil, fmt.Errorf("tier %d exceeds maximum tier count", tier)
 	}
 
-	// If no tombstone, search for the data in all stores
-	for _, store := range l.stores {
-		if store.Exists([]byte(dataKey)) {
-			return true
+	if len(l.tiers[tier]) == 0 {
+		storePath := filepath.Join(l.directory, fmt.Sprintf("tier-%d-store-%d", tier, time.Now().UnixNano()))
+		newStore, err := l.createStore(storePath, l.blockSize) // Use the stored blockSize
+		if err != nil {
+			return nil, fmt.Errorf("failed to create store: %w", err)
 		}
+		l.tiers[tier] = append(l.tiers[tier], newStore)
 	}
-
-	return false // Key not found in any store
+	return l.tiers[tier][0], nil
 }
-// Put stores a key-value pair and triggers store rotation if needed.
+
+// Put stores a key-value pair in the active store of Tier 0
 func (l *Linelsm) Put(key, value []byte) error {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
+    l.mutex.Lock()
+    defer l.mutex.Unlock()
 
-	dataKey := dataPrefix + string(key)
-	if err := l.stores[0].Put([]byte(dataKey), value); err != nil {
-		return err
-	}
+    // Get or create the active store in Tier 0
+    activeStore, err := l.getOrCreateActiveStore(0)
+    if err != nil {
+        return fmt.Errorf("failed to get active store: %w", err)
+    }
 
-	// Increment the key count and check if rotation is needed
-	l.currentKeyCount++
-	if l.currentKeyCount >= l.maxKeysPerStore {
-		if err := l.rotateStore(); err != nil {
-			return err
-		}
-	}
+    // Remove any existing tombstone when putting new data
+    tombstoneKey := append([]byte(tombstonePrefix), key...)
+    if activeStore.Exists(tombstoneKey) {
+        if err := activeStore.Delete(tombstoneKey); err != nil {
+            return fmt.Errorf("failed to remove tombstone: %w", err)
+        }
+    }
 
-	return nil
+    // Store with data prefix
+    dataKey := append([]byte(dataPrefix), key...)
+    if err := activeStore.Put(dataKey, value); err != nil {
+        return fmt.Errorf("failed to put data: %w", err)
+    }
+
+    // Check if we need to trigger a flush
+    if l.shouldFlushTier(0) {
+        return l.flushTier(0)
+    }
+
+    return nil
 }
 
-// Delete marks a key as deleted by storing a tombstone in the active store.
+// Get retrieves the value for a key, respecting tombstones
+func (l *Linelsm) Get(key []byte) ([]byte, error) {
+    l.mutex.RLock()
+    defer l.mutex.RUnlock()
+
+    dataKey := append([]byte(dataPrefix), key...)
+    tombstoneKey := append([]byte(tombstonePrefix), key...)
+    
+    var latestValue []byte
+    var foundValue bool
+    var tombstoneFound bool
+    
+    // Search through all tiers from newest to oldest
+    for i := 0; i < len(l.tiers); i++ {
+        for _, store := range l.tiers[i] {
+            // Check for tombstone
+            if store.Exists(tombstoneKey) {
+                tombstoneFound = true
+                break
+            }
+            
+            // Look for value if we haven't found one yet
+            if !foundValue {
+                if value, err := store.Get(dataKey); err == nil {
+                    latestValue = value
+                    foundValue = true
+                    break
+                }
+            }
+        }
+        
+        // If we found a tombstone, the key is deleted
+        if tombstoneFound {
+            return nil, fmt.Errorf("key deleted")
+        }
+    }
+    
+    if !foundValue {
+        return nil, fmt.Errorf("key not found")
+    }
+    
+    return latestValue, nil
+}
+
+// Delete marks a key as deleted using a tombstone
 func (l *Linelsm) Delete(key []byte) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	tombstoneKey := tombstonePrefix + string(key)
-	if err := l.stores[0].Put([]byte(tombstoneKey), nil); err != nil {
-		return err
+	activeStore, err := l.getOrCreateActiveStore(0)
+	if err != nil {
+		return fmt.Errorf("failed to get active store: %w", err)
 	}
 
-	// Increment the key count and check for rotation
-	l.currentKeyCount++
-	if l.currentKeyCount >= l.maxKeysPerStore {
-		return l.rotateStore()
+	// Add tombstone
+	tombstoneKey := append([]byte(tombstonePrefix), key...)
+	if err := activeStore.Put(tombstoneKey, nil); err != nil {
+		return fmt.Errorf("failed to put tombstone: %w", err)
 	}
 
 	return nil
 }
 
-// rotateStore creates a new store when the current one reaches the threshold.
-func (l *Linelsm) rotateStore() error {
-	fmt.Printf("Rotating store. Creating new store %d\n", l.currentDir+1)
-	l.currentDir++
-	l.currentKeyCount = 0 // Reset key count for the new store
+// Exists checks if a key exists and is not tombstoned
+func (l *Linelsm) Exists(key []byte) bool {
+	l.mutex.RLock()
+	defer l.mutex.RUnlock()
 
-	if err := l.openCurrentStore(); err != nil {
-		return err
-	}
-	return l.saveMetadata()
-}
-
-// openCurrentStore opens the latest store directory and adds it to the store list.
-func (l *Linelsm) openCurrentStore() error {
-	dirPath := filepath.Join(l.directory, fmt.Sprintf("%d", l.currentDir))
-	store, err := l.createStore(dirPath, l.maxBlock)
-	if err != nil {
-		return err
-	}
-	l.stores = append([]KvLike{store}, l.stores...) // Newest store first
-	return nil
-}
-
-// Get retrieves a key's value, checking for tombstones in all stores.
-func (l *Linelsm) Get(key []byte) ([]byte, error) {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
-
-	tombstoneKey := tombstonePrefix + string(key)
-	dataKey := dataPrefix + string(key)
-
-	// Check for a tombstone in all stores (from newest to oldest)
-	for _, store := range l.stores {
-		if store.Exists([]byte(tombstoneKey)) {
-			return nil, fmt.Errorf("key not found (tombstoned)")
+	// Check for tombstone first
+	tombstoneKey := append([]byte(tombstonePrefix), key...)
+	for i := len(l.tiers) - 1; i >= 0; i-- {
+		for _, store := range l.tiers[i] {
+			if store.Exists(tombstoneKey) {
+				return false
+			}
 		}
 	}
 
-	// If no tombstone is found, search for the data in all stores
-	for _, store := range l.stores {
-		value, err := store.Get([]byte(dataKey))
-		if err == nil {
-			return value, nil
+	// Check for actual key
+	dataKey := append([]byte(dataPrefix), key...)
+	for i := len(l.tiers) - 1; i >= 0; i-- {
+		for _, store := range l.tiers[i] {
+			if store.Exists(dataKey) {
+				return true
+			}
 		}
 	}
 
-	return nil, fmt.Errorf("key not found")
+	return false
 }
 
-// saveMetadata writes the current state (active directory) to metadata.
-func (l *Linelsm) saveMetadata() error {
-	data, err := json.Marshal(l.currentDir)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(l.directory, "metadata.json"), data, 0644)
-}
-
-// loadMetadata loads the metadata to determine the latest store directory.
-func (l *Linelsm) loadMetadata() error {
-	metadataPath := filepath.Join(l.directory, "metadata.json")
-	data, err := os.ReadFile(metadataPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			l.currentDir = 500000 // Start with directory 500000 if no metadata exists
-			return nil
-		}
-		return err
-	}
-	return json.Unmarshal(data, &l.currentDir)
-}
-
-// Close closes all open stores.
-func (l *Linelsm) Close() error {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
-
-	for _, store := range l.stores {
-		if err := store.Close(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// Flush ensures all changes are persisted to disk, collecting any errors along the way.
+// Flush triggers an immediate flush of all tiers
 func (l *Linelsm) Flush() error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	var flushErrors []string
+	for tier := 0; tier < len(l.tiers); tier++ {
+		if err := l.flushTier(tier); err != nil {
+			return fmt.Errorf("failed to flush tier %d: %w", tier, err)
+		}
+	}
+	return nil
+}
 
-	for i, store := range l.stores {
-		if err := store.Flush(); err != nil {
-			flushErrors = append(flushErrors, fmt.Sprintf("store %d: %v", i, err))
+// shouldFlushTier determines if a tier needs flushing based on size
+func (l *Linelsm) shouldFlushTier(tier int) bool {
+    if tier >= len(l.maxTierSizes) {
+        return false
+    }
+
+    var totalSize int64
+    for _, store := range l.tiers[tier] {
+        totalSize += store.Size()
+    }
+
+    return totalSize > l.maxTierSizes[tier]
+}
+
+// flushTier moves data from one tier to the next
+func (l *Linelsm) flushTier(tier int) error {
+	if tier+1 >= len(l.tiers) {
+		return nil // No higher tier to flush into
+	}
+
+	// Create new store in the next tier
+	nextTierStore, err := l.getOrCreateActiveStore(tier + 1)
+	if err != nil {
+		return fmt.Errorf("failed to create next tier store: %w", err)
+	}
+
+	// Merge all stores in current tier into the next tier
+	for _, store := range l.tiers[tier] {
+		if err := l.mergeStore(store, nextTierStore); err != nil {
+			return fmt.Errorf("failed to merge store: %w", err)
 		}
 	}
 
-	if len(flushErrors) > 0 {
-		return fmt.Errorf("flush errors: %s", strings.Join(flushErrors, "; "))
+	// Close and clean up old stores
+	for _, store := range l.tiers[tier] {
+		if err := store.Close(); err != nil {
+			return fmt.Errorf("failed to close store: %w", err)
+		}
+	}
+
+	// Clear the current tier
+	l.tiers[tier] = nil
+
+	// Update metadata
+	l.metadata.LastFlush = time.Now()
+	if err := l.saveMetadata(); err != nil {
+		return fmt.Errorf("failed to save metadata: %w", err)
 	}
 
 	return nil
 }
 
+// mergeStore combines data from one store into another, handling tombstones
+func (l *Linelsm) mergeStore(from, to KvLike) error {
+    // Track processed keys to handle overwrites correctly
+    processedKeys := make(map[string]bool)
+    
+    // First pass: handle tombstones
+    _, err := from.MapFunc(func(k, v []byte) error {
+        keyStr := string(k)
+        if strings.HasPrefix(keyStr, tombstonePrefix) {
+            // Mark the original key as tombstoned
+            originalKey := strings.TrimPrefix(keyStr, tombstonePrefix)
+            processedKeys[originalKey] = true
+            return to.Put(k, v)
+        }
+        return nil
+    })
+    if err != nil {
+        return err
+    }
+    
+    // Second pass: handle data entries
+    _, err = from.MapFunc(func(k, v []byte) error {
+        keyStr := string(k)
+        if strings.HasPrefix(keyStr, dataPrefix) {
+            originalKey := strings.TrimPrefix(keyStr, dataPrefix)
+            // Only copy data if the key wasn't tombstoned
+            if !processedKeys[originalKey] {
+                processedKeys[originalKey] = true
+                return to.Put(k, v)
+            }
+        }
+        return nil
+    })
+    
+    return err
+}
 
+// MapFunc implements the KvLike interface
+func (l *Linelsm) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
+	l.mutex.RLock()
+	defer l.mutex.RUnlock()
 
-// MapFunc applies the provided function to each key-value pair in all stores
-// and returns a map of all non-tombstoned keys.
-func (l *Linelsm) MapFunc(f func(key, value []byte) error) (map[string]bool, error) {
+	visited := make(map[string]bool)
+	for _, tier := range l.tiers {
+		for _, store := range tier {
+			_, err := store.MapFunc(func(k, v []byte) error {
+				visited[string(k)] = true
+				return f(k, v)
+			})
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return visited, nil
+}
+
+// backgroundMaintenance performs periodic maintenance tasks
+func (l *Linelsm) backgroundMaintenance() {
+	ticker := time.NewTicker(l.flushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			l.mutex.Lock()
+			for tier := 0; tier < len(l.tiers); tier++ {
+				if l.shouldFlushTier(tier) {
+					if err := l.flushTier(tier); err != nil {
+						fmt.Printf("Error during maintenance flush: %v\n", err)
+					}
+				}
+			}
+			l.mutex.Unlock()
+		case <-l.closed:
+			return
+		}
+	}
+}
+
+// loadMetadata reads the store metadata from disk
+func (l *Linelsm) loadMetadata() error {
+	path := filepath.Join(l.directory, metadataFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Initialize new metadata
+			l.metadata = StoreMetadata{
+				MaxTierSizes: l.maxTierSizes,
+				LastFlush:    time.Now(),
+			}
+			return nil
+		}
+		return err
+	}
+
+	if err := json.Unmarshal(data, &l.metadata); err != nil {
+		return fmt.Errorf("failed to unmarshal metadata: %w", err)
+	}
+
+	return nil
+}
+
+// saveMetadata writes the store metadata to disk
+func (l *Linelsm) saveMetadata() error {
+	path := filepath.Join(l.directory, metadataFile)
+	data, err := json.Marshal(l.metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+
+	return os.WriteFile(path, data, 0644)
+}
+
+// Close shuts down the store and persists metadata
+func (l *Linelsm) Close() error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	visitedTombstones := make(map[string]bool) // Track tombstoned keys
-	resultKeys := make(map[string]bool)        // Store valid keys
+	// Signal background maintenance to stop
+	close(l.closed)
 
-	for _, store := range l.stores {
-		_, err := store.MapFunc(func(k, v []byte) error {
-			keyStr := string(k)
-
-			// Handle tombstone keys
-			if strings.HasPrefix(keyStr, tombstonePrefix) {
-				visitedTombstones[strings.TrimPrefix(keyStr, tombstonePrefix)] = true
-				return nil
-			}
-
-			// Handle normal data keys
-			originalKey := strings.TrimPrefix(keyStr, dataPrefix)
-
-			// Skip keys that have been tombstoned
-			if visitedTombstones[originalKey] {
-				return nil
-			}
-
-			// Add the key to the result map
-			resultKeys[originalKey] = true
-
-			// Apply the provided function to the key-value pair
-			return f([]byte(originalKey), v)
-		})
-		if err != nil {
-			return nil, fmt.Errorf("map function failed: %w", err)
+	// Flush all tiers
+	for tier := 0; tier < len(l.tiers); tier++ {
+		if err := l.flushTier(tier); err != nil {
+			return fmt.Errorf("failed to flush tier %d during shutdown: %w", tier, err)
 		}
 	}
 
-	return resultKeys, nil
+	// Close all remaining stores
+	for _, tier := range l.tiers {
+		for _, store := range tier {
+			if err := store.Close(); err != nil {
+				return fmt.Errorf("failed to close store: %w", err)
+			}
+		}
+	}
+
+	// Save final metadata state
+	return l.saveMetadata()
+}
+
+func (l *Linelsm) Size() int64 {
+    l.mutex.RLock()
+    defer l.mutex.RUnlock()
+    
+    var total int64
+    for _, tier := range l.tiers {
+        for _, store := range tier {
+            total += store.Size()
+        }
+    }
+    return total
 }

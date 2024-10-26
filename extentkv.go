@@ -11,6 +11,7 @@ import (
 )
 
 type ExtentKeyValStore struct {
+	DefaultOps
 	keysFile    *os.File
 	valuesFile  *os.File
 	keysIndex   *os.File
@@ -649,4 +650,16 @@ func (s *ExtentKeyValStore) DumpIndex () error {
 		entry++
 	}
 	return nil
+}
+
+func (s *ExtentKeyValStore) Size() int64 {
+    var count int64
+    _, err := s.MapFunc(func(k, v []byte) error {
+        count++
+        return nil
+    })
+    if err != nil {
+        return 0
+    }
+    return count
 }

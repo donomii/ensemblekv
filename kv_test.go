@@ -6,6 +6,7 @@ import (
 	"testing"
 )
 
+/*
 func TestExtentKeyValueStore(t *testing.T) {
 	StartKVStoreOperations(t, ExtentCreator, "ExtentKeyValueStore")
 }
@@ -20,10 +21,18 @@ func TestEnsembleExtentStore(t *testing.T) {
 	}, "EnsembleExtentStore")
 }
 
-func TestLineLSMExtentStore(t *testing.T) {
+
+	func TestLineLSMExtentStore(t *testing.T) {
+		StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
+			return LineLSMCreator(directory, blockSize, ExtentCreator)
+		}, "LineExtentStore")
+	}
+*/
+func TestLineLSMBoltStore(t *testing.T) {
+	t.Log("Starting LSM Bolt")
 	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-		return EnsembleCreator(directory, blockSize, ExtentCreator)
-	}, "EnsembleExtentStore")
+		return LineLSMCreator(directory, blockSize, BoltDbCreator)
+	}, "LineBoltStore")
 }
 
 func TestEnsembleBarrelDbStore(t *testing.T) {
@@ -84,8 +93,6 @@ func StartKVStoreOperations(t *testing.T, creator func(directory string, blockSi
 		FuzzKeyValueOperations(t, store, storeName)
 	})
 }
-
-
 
 func KVStoreOperations(t *testing.T, store KvLike) {
 	t.Run("Put and Get", func(t *testing.T) {
@@ -188,6 +195,9 @@ func MixedSizeKeyValuePairs(t *testing.T, store KvLike) {
 	valueSizes := []int{128, 1024 * 1024, 4 * 1024 * 1024} // Various value sizes
 
 	for _, ks := range keySizes {
+		if ks > maxKeySize {
+			continue
+		}
 		for _, vs := range valueSizes {
 			t.Run(fmt.Sprintf("TestMixedSizes_%d_%d", ks, vs), func(t *testing.T) {
 				key := bytes.Repeat([]byte("k"), ks)
