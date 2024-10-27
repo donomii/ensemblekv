@@ -186,4 +186,22 @@ func TestTreeLSMExtentStore(t *testing.T) {
 	}, "TreeExtentKeyValueStore")
 }
 
+func TestStarLSMExtentStore(t *testing.T) {
+	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
+		return NewStarLSM(directory, blockSize, ExtentCreator)
+	}, "StarLSMExtentKeyValueStore")
+}
+
+func TestStarLSMBoltStore(t *testing.T) {
+	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
+		return NewStarLSM(directory, blockSize, BoltDbCreator)
+	}, "StarLSMBoltStore")
+}
+
+func TestStarLSMBarrelStore(t *testing.T) {
+	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
+		return NewStarLSM(directory, blockSize, BarrelDbCreator)
+	}, "StarLSMBarrelStore")
+}
+
 
