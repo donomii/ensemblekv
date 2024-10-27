@@ -1,4 +1,4 @@
-module ensemblekv
+module github.com/donomii/ensemblekv
 
 go 1.23.0
 
