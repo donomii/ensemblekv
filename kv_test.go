@@ -116,54 +116,7 @@ func MixedSizeKeyValuePairs(t *testing.T, store KvLike, storeName string) {
         })
     }
 }
-// GetDBLimits returns the appropriate limits for different database types
-func GetDBLimits(storeName string) DBLimits {
-    // Constants for commonly used sizes
-    const (
-        _1KB = 1024
-        _1MB = 1024 * 1024
-        _1GB = 1024 * 1024 * 1024
-        
-        // Bolt-specific limits
-        boltMaxKeySize   = 32768      // 2^15 bytes
-        boltMaxValueSize = 1073741822 // Bolt's max value size (~1GB)
-        
-        // Test-friendly sizes for larger values
-        testMaxKeySize   = _1MB       // 1MB for test keys
-        testMaxValueSize = 10 * _1MB  // 10MB for test values
-    )
-    
-    switch storeName {
-    case "BoltDB", "LineBoltStore", "EnsembleBoltDbStore", "LineLSMBoltStore", "TreeLSMBoltStore":
-        return DBLimits{
-            maxKeySize:   boltMaxKeySize,   // Bolt's hard limit
-            maxValueSize: testMaxValueSize, // Limited for testing speed
-            name:         storeName,
-        }
-        
-    case "BarrelDB", "EnsembleBarrelDbStore", "LineLSMBarrelDbStore", "TreeLSMBarrelStore":
-        return DBLimits{
-            maxKeySize:   testMaxKeySize,   // 1MB reasonable limit
-            maxValueSize: testMaxValueSize, // Limited for testing speed
-            name:         storeName,
-        }
-        
-    case "ExtentKeyValueStore", "EnsembleExtentStore", "LineLSMExtentStore", "TreeLSMExtentStore":
-        return DBLimits{
-            maxKeySize:   testMaxKeySize,   // Limited for testing speed
-            maxValueSize: testMaxValueSize, // Limited for testing speed
-            name:         storeName,
-        }
-        
-    default:
-        // Conservative default limits matching Bolt's constraints
-        return DBLimits{
-            maxKeySize:   boltMaxKeySize,   // Safe default matching Bolt
-            maxValueSize: testMaxValueSize, // Limited for testing speed
-            name:         storeName,
-        }
-    }
-}
+
 
 // Updated test functions
 func TestBoltDbStore(t *testing.T) {
