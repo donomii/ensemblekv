@@ -141,14 +141,14 @@ func GetDBLimits(storeName string) DBLimits {
             name:         storeName,
         }
         
-    case "BarrelDB", "EnsembleBarrelDbStore", "LineLSMBarrelDbStore":
+    case "BarrelDB", "EnsembleBarrelDbStore", "LineLSMBarrelDbStore", "TreeLSMBarrelStore":
         return DBLimits{
             maxKeySize:   testMaxKeySize,   // 1MB reasonable limit
             maxValueSize: testMaxValueSize, // Limited for testing speed
             name:         storeName,
         }
         
-    case "ExtentKeyValueStore", "EnsembleExtentStore", "LineLSMExtentStore":
+    case "ExtentKeyValueStore", "EnsembleExtentStore", "LineLSMExtentStore", "TreeLSMExtentStore":
         return DBLimits{
             maxKeySize:   testMaxKeySize,   // Limited for testing speed
             maxValueSize: testMaxValueSize, // Limited for testing speed
@@ -194,19 +194,19 @@ func TestLineLSMBarrelStore(t *testing.T) {
 func TestLineLSMExtentStore(t *testing.T) {
     StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
         return LineLSMCreator(directory, blockSize, ExtentCreator)
-    }, "ExtentKeyValueStore")
+    }, "LineLSMExtentStore")
 }
 
 func TestEnsembleBoltDbStore(t *testing.T) {
 	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
         return EnsembleCreator(directory, blockSize, BoltDbCreator)
-    }, "LineBoltStore")
+    }, "EnsembleBoltStore")
 }
 
 func TestEnsembleBarrelDbStore(t *testing.T) {
 	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
 		return EnsembleCreator(directory, blockSize, BarrelDbCreator)
-	}, "LineLSMBarrelStore")
+	}, "EnsembleBarrelStore")
 }
 
 func TestEnsembleExtentStore(t *testing.T) {

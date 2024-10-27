@@ -18,13 +18,31 @@ type TreeLSM struct {
 	DefaultOps
 	directory   string
 	currentStore KvLike
-	subStores   map[string]*TreeLSM  // Prefix -> Store mapping
+	subStores   map[string]*TreeLSM
 	parent      *TreeLSM
 	prefix      string
 	isReadOnly  bool
 	createStore func(path string, blockSize int) (KvLike, error)
 	blockSize   int
 	mutex       sync.RWMutex
+	hashFunc    HashFunc // Added hash function
+}
+
+// hashKey hashes a key and returns the hex string
+func (t *TreeLSM) hashKey(key []byte) string {
+	// Use hash function to get uint64
+	hashVal := t.hashFunc(key)
+	
+	// Convert to hex string
+	return fmt.Sprintf("%016x", hashVal)
+}
+
+// getPrefixForKey now uses the hashed key value
+func getPrefixForKey(hashedKey string) string {
+	if len(hashedKey) == 0 {
+		return "0"
+	}
+	return hashedKey[:prefixLen]
 }
 
 // NewTreeLSM creates a new TreeLSM store
@@ -38,6 +56,7 @@ func NewTreeLSM(
 		subStores:   make(map[string]*TreeLSM),
 		createStore: createStore,
 		blockSize:   blockSize,
+		hashFunc:    defaultHashFunc, // Use the same hash function as EnsembleKV
 	}
 
 	if err := os.MkdirAll(directory, 0755); err != nil {
@@ -59,53 +78,16 @@ func NewTreeLSM(
 	return store, nil
 }
 
-// loadSubStores scans for and loads existing substores
-func (t *TreeLSM) loadSubStores() error {
-	entries, err := os.ReadDir(t.directory)
-	if err != nil {
-		return fmt.Errorf("failed to read directory: %w", err)
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() && len(entry.Name()) == prefixLen && isHexString(entry.Name()) {
-			subStore, err := NewTreeLSM(
-				filepath.Join(t.directory, entry.Name()),
-				t.blockSize,
-				t.createStore,
-			)
-			if err != nil {
-				return fmt.Errorf("failed to load substore %s: %w", entry.Name(), err)
-			}
-			subStore.prefix = entry.Name()
-			subStore.parent = t
-			t.subStores[entry.Name()] = subStore
-		}
-	}
-
-	return nil
-}
-
-// getPrefixForKey extracts the prefix for a key
-func getPrefixForKey(key []byte) string {
-	if len(key) == 0 {
-		return "0"
-	}
-	return hex.EncodeToString(key)[:prefixLen]
-}
-
-// isHexString checks if a string is valid hex
-func isHexString(s string) bool {
-	_, err := hex.DecodeString(s)
-	return err == nil
-}
-
 // Put stores a key-value pair
 func (t *TreeLSM) Put(key, value []byte) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
+	// Hash the key first
+	hashedKey := t.hashKey(key)
+
 	if t.isReadOnly {
-		prefix := getPrefixForKey(key)
+		prefix := getPrefixForKey(hashedKey)
 		subStore, exists := t.subStores[prefix]
 		if !exists {
 			return fmt.Errorf("no substore found for prefix %s", prefix)
@@ -130,8 +112,11 @@ func (t *TreeLSM) Get(key []byte) ([]byte, error) {
 	t.mutex.RLock()
 	defer t.mutex.RUnlock()
 
+	// Hash the key first
+	hashedKey := t.hashKey(key)
+
 	// First check substores if they exist
-	prefix := getPrefixForKey(key)
+	prefix := getPrefixForKey(hashedKey)
 	if subStore, exists := t.subStores[prefix]; exists {
 		value, err := subStore.Get(key)
 		if err == nil {
@@ -172,7 +157,8 @@ func (t *TreeLSM) split() error {
 
 	// Redistribute existing data
 	_, err := t.currentStore.MapFunc(func(key, value []byte) error {
-		prefix := getPrefixForKey(key)
+		hashedKey := t.hashKey(key)
+		prefix := getPrefixForKey(hashedKey)
 		subStore := t.subStores[prefix]
 		return subStore.currentStore.Put(key, value)
 	})
@@ -190,8 +176,11 @@ func (t *TreeLSM) Delete(key []byte) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
+	// Hash the key first
+	hashedKey := t.hashKey(key)
+
 	if t.isReadOnly {
-		prefix := getPrefixForKey(key)
+		prefix := getPrefixForKey(hashedKey)
 		subStore, exists := t.subStores[prefix]
 		if !exists {
 			return fmt.Errorf("no substore found for prefix %s", prefix)
@@ -207,8 +196,11 @@ func (t *TreeLSM) Exists(key []byte) bool {
 	t.mutex.RLock()
 	defer t.mutex.RUnlock()
 
+	// Hash the key first
+	hashedKey := t.hashKey(key)
+
 	// Check substores first
-	prefix := getPrefixForKey(key)
+	prefix := getPrefixForKey(hashedKey)
 	if subStore, exists := t.subStores[prefix]; exists {
 		if subStore.Exists(key) {
 			return true
@@ -227,6 +219,51 @@ func (t *TreeLSM) Exists(key []byte) bool {
 
 	return false
 }
+
+// The rest of the methods (Flush, Close, Size, MapFunc) remain unchanged 
+// as they don't need to deal with key hashing directly
+
+
+
+
+
+
+// loadSubStores scans for and loads existing substores
+func (t *TreeLSM) loadSubStores() error {
+	entries, err := os.ReadDir(t.directory)
+	if err != nil {
+		return fmt.Errorf("failed to read directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() && len(entry.Name()) == prefixLen && isHexString(entry.Name()) {
+			subStore, err := NewTreeLSM(
+				filepath.Join(t.directory, entry.Name()),
+				t.blockSize,
+				t.createStore,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to load substore %s: %w", entry.Name(), err)
+			}
+			subStore.prefix = entry.Name()
+			subStore.parent = t
+			t.subStores[entry.Name()] = subStore
+		}
+	}
+
+	return nil
+}
+
+
+// isHexString checks if a string is valid hex
+func isHexString(s string) bool {
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
+
+
+
 
 // Flush ensures all data is written to disk
 func (t *TreeLSM) Flush() error {
