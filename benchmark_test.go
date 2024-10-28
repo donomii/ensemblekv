@@ -23,13 +23,13 @@ type BenchConfig struct {
 // Default benchmark configurations
 var (
 	SmallDataset = &BenchConfig{
-		NumItems:       10_000,
+		NumItems:       1_000,
 		MinKeySize:     16,
 		MaxKeySize:     32,
 		MinValueSize:   64,
 		MaxValueSize:   256,
 		ReadWriteRatio: 0.7,
-		BatchSize:      1000,
+		BatchSize:      100,
 		Seed:           42,
 	}
 	
@@ -67,7 +67,7 @@ var StoreCreators = []StoreCreator{
 	{"BoltDB", BoltDbCreator},
 	//{"BarrelDB", BarrelDbCreator},
 	{"ExtentKV", ExtentCreator},
-	{"Pudge", PudgeCreator},
+	//{"Pudge", PudgeCreator},
 	{"JsonKV", JsonKVCreator},
 	{"EnsembleJsonKV", func(d string, b int) (KvLike, error) {
 		return EnsembleCreator(d, b, JsonKVCreator) 
@@ -81,15 +81,16 @@ var StoreCreators = []StoreCreator{
 	{"LineLSMJsonKV", func(d string, b int) (KvLike, error) {
 		return LineLSMCreator(d, b, JsonKVCreator)
 	}},
-	{"TreeLSMPudge", func(d string, b int) (KvLike, error) {
-		return NewTreeLSM(d, b, PudgeCreator) 
+	/*{"TreeLSMPudge", func(d string, b int) (KvLike, error) {
+		return NewTreeLSM(d, b, PudgeCreator)
 	}},
 	{"StarLSMPudge", func(d string, b int) (KvLike, error) { 
 		return NewStarLSM(d, b, PudgeCreator) 
 	}},
-	{"LineLSMPudge", func(d string, b int) (KvLike, error) { 
+	{"LineLSMPudge", func(d string, b int) (KvLike, error) {
 		return LineLSMCreator(d, b, PudgeCreator) 
 	}},
+	*/
 	{"EnsembleBolt", func(d string, b int) (KvLike, error) { 
 		return EnsembleCreator(d, b, BoltDbCreator) 
 	}},

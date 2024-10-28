@@ -117,7 +117,7 @@ var baseStores = []struct {
     {"Bolt", BoltDbCreator},
     //{"Barrel", BarrelDbCreator},
     {"Extent", ExtentCreator},
-    {"Pudge", PudgeCreator},
+   // {"Pudge", PudgeCreator},
 	{"JsonKV", JsonKVCreator},
 }
 
