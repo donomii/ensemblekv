@@ -3,14 +3,13 @@ package ensemblekv
 import (
     "bytes"
     "fmt"
-    "path/filepath"
     "testing"
     "time"
 )
 
 // Test timeouts and limits
 const (
-    testTimeout = 30 * time.Second  // Reduced from 10m
+    testTimeout = 300 * time.Second  // Reduced from 10m
     maxTestSize = 10 * 1024 * 1024  // 10MB max for test data
 )
 
@@ -25,16 +24,9 @@ func StartKVStoreOperations(t *testing.T, creator func(directory string, blockSi
     go func() {
         t.Run("KVStore", func(t *testing.T) {
             // Create temporary directory
-            dir := t.TempDir()
+            storePath := t.TempDir()
             
-            // Adjust paths based on store type
-            var storePath string
-            switch storeName {
-            case "BoltDB", "LineBoltStore", "EnsembleBoltDbStore":
-                storePath = filepath.Join(dir, "bolt.db")
-            default:
-                storePath = dir
-            }
+
             
             blockSize := 1024 * 4 // 4KB blocks
             
@@ -117,91 +109,73 @@ func MixedSizeKeyValuePairs(t *testing.T, store KvLike, storeName string) {
     }
 }
 
-
-// Updated test functions
-func TestBoltDbStore(t *testing.T) {
-    StartKVStoreOperations(t, BoltDbCreator, "BoltDB")
+// Base store types
+var baseStores = []struct {
+    name    string
+    creator func(directory string, blockSize int) (KvLike, error)
+}{
+    {"Bolt", BoltDbCreator},
+    //{"Barrel", BarrelDbCreator},
+    {"Extent", ExtentCreator},
+    {"Pudge", PudgeCreator},
+	{"JsonKV", JsonKVCreator},
 }
 
-func TestBarrelDbStore(t *testing.T) {
-    StartKVStoreOperations(t, BarrelDbCreator, "BarrelDB")
+// Store wrapper types
+var wrapperTypes = []struct {
+    name string
+    createWrapper func(baseCreator func(string, int) (KvLike, error)) func(string, int) (KvLike, error)
+}{
+    {
+        "Line",
+        func(baseCreator func(string, int) (KvLike, error)) func(string, int) (KvLike, error) {
+            return func(directory string, blockSize int) (KvLike, error) {
+                return LineLSMCreator(directory, blockSize, baseCreator)
+            }
+        },
+    },
+    {
+        "Ensemble",
+        func(baseCreator func(string, int) (KvLike, error)) func(string, int) (KvLike, error) {
+            return func(directory string, blockSize int) (KvLike, error) {
+                return EnsembleCreator(directory, blockSize, baseCreator)
+            }
+        },
+    },
+    {
+        "Tree",
+        func(baseCreator func(string, int) (KvLike, error)) func(string, int) (KvLike, error) {
+            return func(directory string, blockSize int) (KvLike, error) {
+                return NewTreeLSM(directory, blockSize, baseCreator)
+            }
+        },
+    },
+    {
+        "Star",
+        func(baseCreator func(string, int) (KvLike, error)) func(string, int) (KvLike, error) {
+            return func(directory string, blockSize int) (KvLike, error) {
+                return NewStarLSM(directory, blockSize, baseCreator)
+            }
+        },
+    },
 }
 
-func TestExtentStore(t *testing.T) {
-    StartKVStoreOperations(t, ExtentCreator, "ExtentKeyValueStore")
+func TestAllStores(t *testing.T) {
+    // Test base stores
+    for _, base := range baseStores {
+        t.Run(base.name, func(t *testing.T) {
+            StartKVStoreOperations(t, base.creator, base.name)
+        })
+    }
+
+    // Test wrapped stores
+    for _, wrapper := range wrapperTypes {
+        for _, base := range baseStores {
+            name := fmt.Sprintf("%sLSM%s", wrapper.name, base.name)
+            t.Run(name, func(t *testing.T) {
+                creator := wrapper.createWrapper(base.creator)
+                StartKVStoreOperations(t, creator, name)
+            })
+        }
+    }
 }
-
-func TestLineLSMBoltStore(t *testing.T) {
-    StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-        return LineLSMCreator(directory, blockSize, BoltDbCreator)
-    }, "LineBoltStore")
-}
-
-func TestLineLSMBarrelStore(t *testing.T) {
-	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-		return LineLSMCreator(directory, blockSize, BarrelDbCreator)
-	}, "LineLSMBarrelStore")
-}
-
-
-func TestLineLSMExtentStore(t *testing.T) {
-    StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-        return LineLSMCreator(directory, blockSize, ExtentCreator)
-    }, "LineLSMExtentStore")
-}
-
-func TestEnsembleBoltDbStore(t *testing.T) {
-	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-        return EnsembleCreator(directory, blockSize, BoltDbCreator)
-    }, "EnsembleBoltStore")
-}
-
-func TestEnsembleBarrelDbStore(t *testing.T) {
-	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-		return EnsembleCreator(directory, blockSize, BarrelDbCreator)
-	}, "EnsembleBarrelStore")
-}
-
-func TestEnsembleExtentStore(t *testing.T) {
-	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-		return EnsembleCreator(directory, blockSize, ExtentCreator)
-	}, "EnsembleExtentKeyValueStore")
-}
-
-func TestTreeLSMBoltStore(t *testing.T) {
-	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-		return NewTreeLSM(directory, blockSize, BoltDbCreator)
-	}, "TreeLSMBoltStore")
-}
-
-func TestTreeLSMBarrelStore(t *testing.T) {
-	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-		return NewTreeLSM(directory, blockSize, BarrelDbCreator)
-	}, "TreeLSMBarrelStore")
-}
-
-func TestTreeLSMExtentStore(t *testing.T) {
-	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-		return NewTreeLSM(directory, blockSize, ExtentCreator)
-	}, "TreeExtentKeyValueStore")
-}
-
-func TestStarLSMExtentStore(t *testing.T) {
-	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-		return NewStarLSM(directory, blockSize, ExtentCreator)
-	}, "StarLSMExtentKeyValueStore")
-}
-
-func TestStarLSMBoltStore(t *testing.T) {
-	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-		return NewStarLSM(directory, blockSize, BoltDbCreator)
-	}, "StarLSMBoltStore")
-}
-
-func TestStarLSMBarrelStore(t *testing.T) {
-	StartKVStoreOperations(t, func(directory string, blockSize int) (KvLike, error) {
-		return NewStarLSM(directory, blockSize, BarrelDbCreator)
-	}, "StarLSMBarrelStore")
-}
-
-

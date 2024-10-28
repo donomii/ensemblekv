@@ -221,8 +221,8 @@ func (s *EnsembleKv) Close() error {
 
 // rebalance redistributes keys across a new generation of substores when the current generation reaches capacity.
 func (s *EnsembleKv) rebalance() error {
-	fmt.Printf("Rebalancing store with %d keys\n", s.totalKeys)
-	go fmt.Printf("Rebalancing store complete with %v keys\n", s.totalKeys)
+	//fmt.Printf("Rebalancing store with %d keys\n", s.totalKeys)
+	//go fmt.Printf("Rebalancing store complete with %v keys\n", s.totalKeys)
 
 	// Increment generation and calculate new N
 	s.generation++
@@ -234,7 +234,7 @@ func (s *EnsembleKv) rebalance() error {
 		return err
 	}
 
-	fmt.Printf("Creating new generation %d with %d substores\n", s.generation, s.N)
+	//fmt.Printf("Creating new generation %d with %d substores\n", s.generation, s.N)
 	// Create new substores
 	newSubstores := make([]KvLike, s.N)
 	for i := 0; i < s.N; i++ {
@@ -247,13 +247,13 @@ func (s *EnsembleKv) rebalance() error {
 
 	}
 
-	fmt.Printf("Rebalancing %d keys\n", s.totalKeys)
+	//fmt.Printf("Rebalancing %d keys\n", s.totalKeys)
 	// Re-distribute keys
 	for _, substore := range s.substores {
 		_, err := substore.MapFunc(func(key, value []byte) error {
 			hash := s.hashFunc(key)
 			newIndex := int(hash) % s.N
-			fmt.Printf("Rebalancing key %v to substore %d\n", string(key), newIndex)
+			//fmt.Printf("Rebalancing key %v to substore %d\n", string(key), newIndex)
 			return newSubstores[newIndex].Put(key, value)
 		})
 		if err != nil {
@@ -261,20 +261,20 @@ func (s *EnsembleKv) rebalance() error {
 		}
 	}
 
-	fmt.Printf("Rebalancing complete\n")
+	//fmt.Printf("Rebalancing complete\n")
 
-	fmt.Printf("Closing old substores\n")
+	//fmt.Printf("Closing old substores\n")
 	// Close and remove old substores
 	oldGenPath := filepath.Join(s.directory, fmt.Sprintf("%d", s.generation-1))
 	for _, substore := range s.substores {
-		fmt.Printf("Closing substore\n")
+		//fmt.Printf("Closing substore\n")
 		if err := substore.Close(); err != nil {
 			return fmt.Errorf("Error closing substore: %v\n", err)
 		}
 	}
 
-	fmt.Printf("Removing old generation %d\n", s.generation-1)
-	fmt.Printf("Removing old generation %v\n", oldGenPath)
+	//fmt.Printf("Removing old generation %d\n", s.generation-1)
+	//fmt.Printf("Removing old generation %v\n", oldGenPath)
 	if err := os.RemoveAll(oldGenPath); err != nil {
 		fmt.Printf("Error removing old generation: %v\n", err)
 		return err

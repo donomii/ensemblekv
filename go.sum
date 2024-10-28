@@ -41,6 +41,8 @@ github.com/mr-karan/barreldb v1.0.0/go.mod h1:jU3TaijIG+tmEKDO+rpEuHf9OWD7uZOCaR
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
 github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/recoilme/pudge v1.0.3 h1:h/9dEv5fRqtzM4lnO69kUoN+k7ukxxrW9NGb9ug0grM=
+github.com/recoilme/pudge v1.0.3/go.mod h1:VMvxBLVkrSStldckzCsETBXox3pfovfrnEchafXk8qA=
 github.com/rosedblabs/diskhash v0.0.0-20230910084041-289755737e2a h1:BNp46nsknQivr3Gxzc6ytzG7xtBscBnLYZIkr0UfCko=
 github.com/rosedblabs/diskhash v0.0.0-20230910084041-289755737e2a/go.mod h1:3xvIg+7iOFUL/vMCE/6DwE6Yecb0okVYJBEfpdC/E+8=
 github.com/rosedblabs/wal v1.3.6 h1:oxZYTPX/u4JuGDW98wQ1YamWqerlrlSUFKhgP6Gd/Ao=

@@ -20,6 +20,7 @@ require (
 	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/mr-karan/barreldb v1.0.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	github.com/recoilme/pudge v1.0.3 // indirect
 	github.com/rosedblabs/diskhash v0.0.0-20230910084041-289755737e2a // indirect
 	github.com/rosedblabs/wal v1.3.6 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect

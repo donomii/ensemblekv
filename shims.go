@@ -10,6 +10,8 @@ import (
 	nudb "github.com/iand/gonudb"
 	barrel "github.com/mr-karan/barreldb"
 	bolt "go.etcd.io/bbolt"
+	"path/filepath"
+	"github.com/recoilme/pudge"
 )
 
 // ExtentKeyValueStore is a key-value store that uses a single storage file and an index file to store data.  It can ingest a large amount of data at close to the maximum transfer speed of the drive, and still have reasonable performance.  Deletes do not recover disk space, compaction is required.
@@ -83,9 +85,18 @@ func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize int, substo
 			panic(err)
 		}
 		return h
+	case "pudge":
+		h, err := NewPudgeShim(location, blockSize)
+		if err != nil {
+			panic(err)
+		}
+		return h
+	
 	case "ensemble":
 		var creator func(directory string, blockSize int) (KvLike, error)
 		switch subtipe {
+		case "pudge":
+			creator = PudgeCreator
 		case "nudb":
 			creator = NuDbCreator
 		case "barrel":
@@ -366,29 +377,42 @@ func (s *lotusShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, erro
 
 type BoltDbShim struct {
 	DefaultOps
-	filename   string
+	directory  string
 	boltHandle *bolt.DB
 }
 
-func NewBoltDbShim(filename string, blockSize int) (*BoltDbShim, error) {
+func NewBoltDbShim(directory string, blockSize int) (*BoltDbShim, error) {
 	s := BoltDbShim{}
-	s.filename = filename
-
-	boltHandle, err := bolt.Open(s.filename, 0600, nil)
-	if err != nil {
-		return nil, err
+	s.directory = directory
+	
+	// Ensure directory exists
+	if err := os.MkdirAll(directory, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
-	boltHandle.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucket([]byte("Blocks"))
+
+	// Create bolt db file within the directory
+	dbPath := filepath.Join(directory, "bolt.db")
+	boltHandle, err := bolt.Open(dbPath, 0600, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open bolt database: %w", err)
+	}
+
+	// Initialize the default bucket
+	err = boltHandle.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists([]byte("Blocks"))
 		if err != nil {
 			return fmt.Errorf("create bucket: %s", err)
 		}
 		return nil
 	})
-	s.boltHandle = boltHandle
+	if err != nil {
+		return nil, err
+	}
 
+	s.boltHandle = boltHandle
 	return &s, nil
 }
+
 
 func (s *BoltDbShim) Get(key []byte) ([]byte, error) {
 	var v []byte = nil
@@ -485,4 +509,131 @@ func (s *BoltDbShim) Size() int64 {
         return nil
     })
     return count
+}
+
+
+
+type PudgeShim struct {
+	DefaultOps
+	filename string
+	db       *pudge.Db
+}
+
+func NewPudgeShim(directory string, blockSize int) (*PudgeShim, error) {
+	s := &PudgeShim{
+		filename: filepath.Join(directory, "pudge.db"),
+	}
+
+	// Configure Pudge
+	cfg := pudge.DefaultConfig
+	cfg.SyncInterval = 1000 // Sync every 1000ms for balance of performance/safety
+	
+	// Open the database
+	db, err := pudge.Open(s.filename, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open pudge database: %w", err)
+	}
+	s.db = db
+
+	return s, nil
+}
+
+// Get implements KvLike interface
+func (s *PudgeShim) Get(key []byte) ([]byte, error) {
+	var value []byte
+	err := s.db.Get(key, &value)
+	if err != nil {
+		if err == pudge.ErrKeyNotFound {
+			return nil, fmt.Errorf("key not found")
+		}
+		return nil, err
+	}
+	return value, nil
+}
+
+// Put implements KvLike interface
+func (s *PudgeShim) Put(key []byte, val []byte) error {
+	return s.db.Set(key, val)
+}
+
+// Exists implements KvLike interface
+func (s *PudgeShim) Exists(key []byte) bool {
+	exists, err := s.db.Has(key)
+	if err != nil {
+		return false
+	}
+	return exists
+}
+
+// Delete implements KvLike interface
+func (s *PudgeShim) Delete(key []byte) error {
+	return s.db.Delete(key)
+}
+
+// Size implements KvLike interface
+func (s *PudgeShim) Size() int64 {
+	count, err := s.db.Count()
+	if err != nil {
+		return 0
+	}
+	return int64(count)
+}
+
+// Flush implements KvLike interface
+func (s *PudgeShim) Flush() error {
+	// Pudge doesn't have a direct flush method, but we can force a sync
+	// by closing and reopening the database
+	if err := s.db.Close(); err != nil {
+		return err
+	}
+
+	cfg := pudge.DefaultConfig
+	cfg.SyncInterval = 1000
+	
+	db, err := pudge.Open(s.filename, cfg)
+	if err != nil {
+		return err
+	}
+	s.db = db
+	return nil
+}
+
+// Close implements KvLike interface
+func (s *PudgeShim) Close() error {
+	if s.db != nil {
+		return s.db.Close()
+	}
+	return nil
+}
+
+// MapFunc implements KvLike interface
+func (s *PudgeShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
+	// Get all keys
+	keys, err := s.db.Keys(nil, 0, 0, true) // Get all keys in ascending order
+	if err != nil {
+		return nil, err
+	}
+
+	visited := make(map[string]bool)
+	
+	// Iterate through keys
+	for _, key := range keys {
+		var value []byte
+		err := s.db.Get(key, &value)
+		if err != nil {
+			continue // Skip errored entries
+		}
+		
+		visited[string(key)] = true
+		if err := f(key, value); err != nil {
+			return visited, err
+		}
+	}
+
+	return visited, nil
+}
+
+// PudgeCreator is the creator function for PudgeShim
+func PudgeCreator(directory string, blockSize int) (KvLike, error) {
+	return NewPudgeShim(directory, blockSize)
 }
