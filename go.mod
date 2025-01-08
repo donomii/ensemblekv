@@ -1,6 +1,6 @@
 module github.com/donomii/ensemblekv
 
-go 1.23.0
+go 1.18.0
 
 require (
 	github.com/OneOfOne/xxhash v1.2.8 // indirect

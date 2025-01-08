@@ -125,7 +125,7 @@ The ensemble stores can use any of these backend stores:
 
 ## Common Interface
 
-All stores implement the `KvLike` interface:
+All stores, including the ensemble and backend stores, implement the `KvLike` interface:
 
 ```go
 type KvLike interface {
@@ -230,7 +230,7 @@ Contributions are welcome! Areas that need attention:
 
 - Performance benchmarking improvements
 - Additional backend store implementations
-- Better error handling and recovery
+- Better crash handling and recovery
 - Documentation and examples
 - Test coverage
 

@@ -94,36 +94,36 @@ var StoreCreators = []StoreCreator{
 	{"EnsembleBolt", func(d string, b int) (KvLike, error) { 
 		return EnsembleCreator(d, b, BoltDbCreator) 
 	}},
-	{"EnsembleBarrel", func(d string, b int) (KvLike, error) { 
-		return EnsembleCreator(d, b, BarrelDbCreator) 
-	}},
+	//{"EnsembleBarrel", func(d string, b int) (KvLike, error) {
+	//	return EnsembleCreator(d, b, BarrelDbCreator)
+	//}},
 	{"EnsembleExtent", func(d string, b int) (KvLike, error) { 
 		return EnsembleCreator(d, b, ExtentCreator) 
 	}},
 	{"TreeLSMBolt", func(d string, b int) (KvLike, error) { 
 		return NewTreeLSM(d, b, BoltDbCreator) 
 	}},
-	{"TreeLSMBarrel", func(d string, b int) (KvLike, error) { 
-		return NewTreeLSM(d, b, BarrelDbCreator) 
-	}},
+	//{"TreeLSMBarrel", func(d string, b int) (KvLike, error) {
+	//	return NewTreeLSM(d, b, BarrelDbCreator)
+	//}},
 	{"TreeLSMExtent", func(d string, b int) (KvLike, error) { 
 		return NewTreeLSM(d, b, ExtentCreator) 
 	}},
 	{"StarLSMBolt", func(d string, b int) (KvLike, error) { 
 		return NewStarLSM(d, b, BoltDbCreator) 
 	}},
-	{"StarLSMBarrel", func(d string, b int) (KvLike, error) { 
-		return NewStarLSM(d, b, BarrelDbCreator) 
+	//{"StarLSMBarrel", func(d string, b int) (KvLike, error) {
+	//	return NewStarLSM(d, b, BarrelDbCreator)
+	//}},
+	{"StarLSMExtent", func(d string, b int) (KvLike, error) {
+		return NewStarLSM(d, b, ExtentCreator)
 	}},
-	{"StarLSMExtent", func(d string, b int) (KvLike, error) { 
-		return NewStarLSM(d, b, ExtentCreator) 
+	{"LineLSMBolt", func(d string, b int) (KvLike, error) {
+		return LineLSMCreator(d, b, BoltDbCreator)
 	}},
-	{"LineLSMBolt", func(d string, b int) (KvLike, error) { 
-		return LineLSMCreator(d, b, BoltDbCreator) 
-	}},
-	{"LineLSMBarrel", func(d string, b int) (KvLike, error) { 
-		return LineLSMCreator(d, b, BarrelDbCreator) 
-	}},
+	//{"LineLSMBarrel", func(d string, b int) (KvLike, error) {
+	//	return LineLSMCreator(d, b, BarrelDbCreator)
+	//}},
 	{"LineLSMExtent", func(d string, b int) (KvLike, error) { 
 		return LineLSMCreator(d, b, ExtentCreator) 
 	}},
