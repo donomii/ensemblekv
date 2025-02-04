@@ -113,14 +113,7 @@ func GetDBLimits(storeName string) DBLimits {
             maxValueSize: testMaxValueSize, // Limited for testing speed
             name:         storeName,
         }
-        
-    case "BarrelDB", "EnsembleBarrelDbStore", "LineLSMBarrelDbStore", "TreeLSMBarrelStore":
-        return DBLimits{
-            maxKeySize:   testMaxKeySize,   // 1MB reasonable limit
-            maxValueSize: testMaxValueSize, // Limited for testing speed
-            name:         storeName,
-        }
-        
+
     case "ExtentKeyValueStore", "EnsembleExtentStore", "LineLSMExtentStore", "TreeLSMExtentStore":
         return DBLimits{
             maxKeySize:   testMaxKeySize,   // Limited for testing speed

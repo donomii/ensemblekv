@@ -8,7 +8,6 @@ import (
 	"time"
 
 	nudb "github.com/iand/gonudb"
-	barrel "github.com/mr-karan/barreldb"
 	bolt "go.etcd.io/bbolt"
 	"path/filepath"
 	"github.com/recoilme/pudge"
@@ -19,15 +18,6 @@ func ExtentCreator(directory string, blockSize int) (KvLike, error) {
 	return NewExtentKeyValueStore(directory, blockSize)
 }
 
-func BarrelDbCreator(directory string, blockSize int) (KvLike, error) {
-	return NewBarrelShim(directory, blockSize)
-}
-
-/*
-func LotusCreator(directory string, blockSize int) (KvLike, error) {
-	return NewLotusShim(directory, blockSize)
-}
-*/
 
 func NuDbCreator(directory string, blockSize int) (KvLike, error) {
 	return NewNuDbShim(directory, blockSize)
@@ -58,20 +48,6 @@ func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize int, substo
 			panic(err)
 		}
 		return h
-	case "barrel":
-		h, err := NewBarrelShim(location, blockSize)
-		if err != nil {
-			panic(err)
-		}
-		return h
-		/*
-			case "lotus":
-				h, err := NewLotusShim(location, blockSize)
-				if err != nil {
-					panic(err)
-				}
-				return h
-		*/
 	case "extent":
 		h, err := NewExtentKeyValueStore(location, blockSize)
 		if err != nil {
@@ -99,12 +75,6 @@ func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize int, substo
 			creator = PudgeCreator
 		case "nudb":
 			creator = NuDbCreator
-		case "barrel":
-			creator = BarrelDbCreator
-			/*
-				case "lotus":
-					creator = LotusCreator
-			*/
 		case "extent":
 			creator = ExtentCreator
 		case "bolt":
@@ -232,146 +202,6 @@ func (s *nuDbShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, error
 	// this library doesn't work anyway so why bother?
 	panic("lol")
 }
-
-type barrelShim struct {
-	DefaultOps
-	filename string
-	dataPath string
-	keyPath  string
-	logPath  string
-	dbHandle *barrel.Barrel
-}
-
-func NewBarrelShim(filename string, blockSize int) (*barrelShim, error) {
-
-	s := barrelShim{}
-	s.filename = filename
-	err := os.MkdirAll(filename, os.ModePerm)
-	if err != nil {
-		log.Fatalf("error creating data dir: %v", err)
-	} // Creating data dir.
-
-	b, err := barrel.Init(barrel.WithDir(s.filename), barrel.WithBackgrondSync(30*time.Second), barrel.WithCheckFileSizeInterval(30*time.Second), barrel.WithCompactInterval(5*time.Minute))
-	if err != nil {
-		log.Fatalf("error initialising barrel: %v", err)
-	}
-
-	s.dbHandle = b
-
-	return &s, nil
-}
-
-func (s *barrelShim) Size() int64 {
-    // BarrelDB provides a List() method that returns all keys
-    keys := s.dbHandle.List()
-    return int64(len(keys))
-}
-
-func (s *barrelShim) Get(key []byte) ([]byte, error) {
-	return s.dbHandle.Get(string(key))
-}
-
-func (s *barrelShim) Put(key []byte, val []byte) error {
-	return s.dbHandle.Put(string(key), val)
-}
-
-func (s *barrelShim) Exists(key []byte) bool {
-	_, err := s.dbHandle.Get(string(key))
-	if err != nil {
-		return false
-	}
-	return true
-}
-
-func (s *barrelShim) Delete(key []byte) error {
-	return s.dbHandle.Delete(string(key))
-}
-
-func (s *barrelShim) Flush() error {
-	return s.dbHandle.Sync()
-}
-
-func (s *barrelShim) Close() error {
-	return s.dbHandle.Shutdown()
-}
-
-func (s *barrelShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
-	keys := s.dbHandle.List()
-	for _, key := range keys {
-		value, err := s.dbHandle.Get(key)
-		if err != nil {
-			return nil, err
-		}
-		err = f([]byte(key), value)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return nil, nil
-}
-
-/*
-type lotusShim struct {
-	filename     string
-	lotusHandle  *lotus.DB
-	lotusOptions *lotus.Options
-}
-
-func NewLotusShim(filename string, blockSize int) (*lotusShim, error) {
-	s := lotusShim{}
-	s.filename = filename
-	var err error
-	options := lotus.DefaultOptions
-	options.DirPath = s.filename
-	options.ValueLogFileSize = 5 * 1000000000
-	options.PartitionNum = 15
-	s.lotusOptions = &options
-
-	s.lotusHandle, err = lotus.Open(options)
-	if err != nil {
-		panic(err)
-	}
-
-	err = s.lotusHandle.Compact()
-	if err != nil {
-		panic(err)
-	}
-
-	return &s, nil
-}
-
-func (s *lotusShim) Get(key []byte) ([]byte, error) {
-	return s.lotusHandle.Get(key)
-}
-
-func (s *lotusShim) Put(key []byte, val []byte) error {
-	return s.lotusHandle.Put(key, val, nil)
-}
-
-func (s *lotusShim) Exists(key []byte) bool {
-	_, err := s.lotusHandle.Get(key)
-	if err != nil {
-		return false
-	}
-	return true
-}
-
-func (s *lotusShim) Delete(key []byte) error {
-	return s.lotusHandle.Delete(key, nil)
-}
-
-func (s *lotusShim) Flush() error {
-	return s.lotusHandle.Sync()
-}
-
-func (s *lotusShim) Close() error {
-	return s.lotusHandle.Close()
-}
-
-func (s *lotusShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
-	panic("lol")
-}
-*/
 
 
 

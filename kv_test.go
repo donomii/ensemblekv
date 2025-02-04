@@ -115,7 +115,6 @@ var baseStores = []struct {
     creator func(directory string, blockSize int) (KvLike, error)
 }{
     {"Bolt", BoltDbCreator},
-    //{"Barrel", BarrelDbCreator},
     {"Extent", ExtentCreator},
    // {"Pudge", PudgeCreator},
 	{"JsonKV", JsonKVCreator},
