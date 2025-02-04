@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"time"
 
 	nudb "github.com/iand/gonudb"
 	bolt "go.etcd.io/bbolt"
