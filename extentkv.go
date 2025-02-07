@@ -178,6 +178,25 @@ func (s *ExtentKeyValStore) loadValuesIndexCache() error {
     return nil
 }
 
+// Add this new method to fully load all keys from the index file into the in‑memory cache.
+func (s *ExtentKeyValStore) loadKeyCache() error {
+    // If using index caching, ensure that the keys index cache is loaded.
+    if EnableIndexCaching && s.keysIndexCache == nil {
+        if err := s.loadKeysIndexCache(); err != nil {
+            return fmt.Errorf("loadKeyCache: failed to load keys index cache: %w", err)
+        }
+    }
+    // Use our existing helper (which scans the keys index file) to build the full in‑memory key map.
+    keyMap, err := s.LockFreeMapFunc(func(key, value []byte) error {
+        return nil
+    })
+    if err != nil {
+        return fmt.Errorf("loadKeyCache: failed to scan key index: %w", err)
+    }
+    s.cache = keyMap
+    return nil
+}
+
 // Helper to read from index cache or file
 func (s *ExtentKeyValStore) readIndexAt(indexFile *os.File, cache []byte, offset int64, data interface{}) error {
     if EnableIndexCaching && cache != nil {
@@ -660,23 +679,19 @@ func searchDbForKeyExists(key []byte, keysIndex *os.File, keysFile *os.File, key
 func (s *ExtentKeyValStore) Exists(key []byte) bool {
     s.globalLock.Lock()
     defer s.globalLock.Unlock()
-    state, exists := s.cache[string(key)]
-    if exists {
-        return state
-    }
     
-    // Load cache if enabled
-    if EnableIndexCaching {
-        if err := s.loadKeysIndexCache(); err != nil {
-            return false
+    // If the in‑memory cache is empty, load it completely.
+    if len(s.cache) == 0 {
+        if err := s.loadKeyCache(); err != nil {
+            // If the cache cannot be loaded, fall back to the previous behavior.
+            found, err := searchDbForKeyExists(key, s.keysIndex, s.keysFile, s.keysIndexCache)
+            return err == nil && found
         }
     }
     
-    found, err := searchDbForKeyExists(key, s.keysIndex, s.keysFile, s.keysIndexCache)
-    if err == nil && found {
-        return true
-    }
-    return false
+    // Now answer from the in‑memory cache.
+    state, exists := s.cache[string(key)]
+    return exists && state
 }
 
 func (s *ExtentKeyValStore) LockFreeGet(key []byte) ([]byte, error) {
