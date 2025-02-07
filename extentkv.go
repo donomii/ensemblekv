@@ -10,7 +10,7 @@ import (
 	"github.com/donomii/goof"
 )
 
-var EnableIndexCaching bool = false // Feature flag for index caching
+var EnableIndexCaching bool = true // Feature flag for index caching
 
 type ExtentKeyValStore struct {
     DefaultOps
