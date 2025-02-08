@@ -13,7 +13,7 @@ import (
 )
 
 var EnableIndexCaching bool = false // Feature flag for index caching
-var ExtraChecks bool = false
+var ExtraChecks bool = true
 
 /*
 =======================================================================
