@@ -338,14 +338,7 @@ var wrapperTypes = []struct {
     name string
     createWrapper func(baseCreator func(string, int) (KvLike, error)) func(string, int) (KvLike, error)
 }{
-    {
-        "Line",
-        func(baseCreator func(string, int) (KvLike, error)) func(string, int) (KvLike, error) {
-            return func(directory string, blockSize int) (KvLike, error) {
-                return LineLSMCreator(directory, blockSize, baseCreator)
-            }
-        },
-    },
+    
     {
         "Ensemble",
         func(baseCreator func(string, int) (KvLike, error)) func(string, int) (KvLike, error) {

@@ -227,6 +227,60 @@ func panicOnError(reason string, err error) {
 	}
 }
 
+func checkLastIndexEntry(indexFile *os.File, dataFile *os.File) {
+	_, err := indexFile.Seek(-8, 2) 					; panicOnError("Seek to last entry in index file", err)
+	var lastEntry int64
+	err = binary.Read(indexFile, binary.BigEndian, &lastEntry) 	; panicOnError("Read last entry in index file", err)
+	fmt.Println("Last entry in index file is", lastEntry)
+	if lastEntry < 0 {
+		panic("Last entry in index file is negative")
+	}
+
+	//Get length of data file
+	dataFileLength, err := dataFile.Seek(0, 2) 				; panicOnError("Seek to end of data file", err)
+	if lastEntry != dataFileLength {
+		panic(fmt.Sprintf("Last entry in index file does not match data file length: %d != %d", lastEntry, dataFileLength))
+	}
+}
+
+func checkIndexSigns(keyIndex *os.File, valueIndex *os.File) {
+	_, err := keyIndex.Seek(0, 0)						; panicOnError("Seek to start of index file", err)
+	_, err = valueIndex.Seek(0, 0)									; panicOnError("Seek to start of index file", err)
+	for {
+
+		var keyOffset int64
+		err = binary.Read(keyIndex, binary.BigEndian, &keyOffset)
+		if err == io.EOF {
+			break
+		}
+		panicOnError("Read entry in index file", err)
+		var valueOffset int64
+		err = binary.Read(valueIndex, binary.BigEndian, &valueOffset)
+		if err == io.EOF {
+			break
+		}
+		panicOnError("Read entry in data file", err)
+		if keyOffset == 0 && valueOffset != 0 {
+			panic("Key offset is 0 but value offset is not")
+		}
+		if keyOffset < 0 && valueOffset > 0 {
+			panic("Key offset is negative but value offset is positive")
+		}
+		if keyOffset > 0 && valueOffset < 0 {
+			panic("Key offset is positive but value offset is negative")
+		}
+		if keyOffset != 0 && valueOffset == 0 {
+			panic("Key offset is negative but value offset is 0")
+		}
+		if keyOffset == 0 && valueOffset != 0 {
+			panic("Key offset is 0 and value offset is not 0")
+		}
+
+
+	}
+}
+
+
 func NewExtentKeyValueStore(directory string, blockSize int) (*ExtentKeyValStore, error) {
 	fmt.Println("Creating new ExtentKeyValueStore with enhanced caching at directory", directory)
 	os.MkdirAll(directory, 0755)
@@ -237,7 +291,7 @@ func NewExtentKeyValueStore(directory string, blockSize int) (*ExtentKeyValStore
 
 	if !goof.Exists(keysIndexFilePath) {
 		//Write a single 0 to the keys index file
-		keysIndex, err := os.OpenFile(keysIndexFilePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
+		keysIndex, err := os.OpenFile(keysIndexFilePath, os.O_CREATE|os.O_RDWR, 0644)
 		panicOnError("Open keys index file for writing", err)
 		err = binary.Write(keysIndex, binary.BigEndian, int64(0))
 		panicOnError("Write a 0 to init an index file", err)
@@ -246,7 +300,7 @@ func NewExtentKeyValueStore(directory string, blockSize int) (*ExtentKeyValStore
 
 	if !goof.Exists(valuesIndexFilePath) {
 		//Write a single 0 to the values index file
-		valuesIndex, err := os.OpenFile(valuesIndexFilePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
+		valuesIndex, err := os.OpenFile(valuesIndexFilePath, os.O_CREATE|os.O_RDWR, 0644)
 		panicOnError("Open values index file for writing", err)
 		err = binary.Write(valuesIndex, binary.BigEndian, int64(0))
 		panicOnError("Write a 0 to init an index file", err)
@@ -284,10 +338,10 @@ func NewExtentKeyValueStore(directory string, blockSize int) (*ExtentKeyValStore
 		keysIndex.Truncate(keysFileEnd)
 	}
 
-	valuesIndex, err := os.OpenFile(valuesIndexFilePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
+	valuesIndex, err := os.OpenFile(valuesIndexFilePath, os.O_CREATE|os.O_RDWR, 0644)
 	panicOnError("Open values index file", err)
 
-	valuesFile, err := os.OpenFile(valuesFilePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
+	valuesFile, err := os.OpenFile(valuesFilePath, os.O_CREATE|os.O_RDWR, 0644)
 	panicOnError("Open values data file", err)
 
 	//Read the last index item to get the end of the file.  If this is different to the file size, then the file is corrupt and we should truncate it to size
@@ -469,6 +523,11 @@ func (s *ExtentKeyValStore) loadKeyCache() error {
 // its deletion flag and value boundaries are used to either report that the key is deleted
 // or to load its corresponding value from values.dat.
 func (s *ExtentKeyValStore) forwardScanForKey(key []byte) ([]byte, error) {
+
+	checkLastIndexEntry(s.keysIndex, s.keysFile)
+	checkLastIndexEntry(s.valuesIndex, s.valuesFile)
+	checkIndexSigns(s.keysIndex, s.valuesIndex)
+
 	keysIndexFileLength, err := s.keysFile.Seek(0, 2)
 	panicOnError("Seek to end of keys index file", err)
 
@@ -486,6 +545,7 @@ func (s *ExtentKeyValStore) forwardScanForKey(key []byte) ([]byte, error) {
 	}
 
 	fmt.Println("forwardScanForKey: Retrieving value for key", trimTo40(key), "at offset", offset)
+	checkIndexSigns(s.keysIndex, s.valuesIndex)
 	value, _, err := readDataAtIndexPos(offset, s.valuesIndex, s.valuesFile, s.valuesIndexCache)
 	if err != nil {
 		return nil, fmt.Errorf("forwardScanForKey: failed to read value: %v", err)
@@ -573,6 +633,9 @@ func (s *ExtentKeyValStore) Put(key, value []byte) error {
 	// Write the end of the file position to the keys index.
 	err = binary.Write(s.keysIndex, binary.BigEndian, endOfKeysFile) 	; panicOnError("Write to keys index file", err)
 
+	checkLastIndexEntry(s.keysIndex, s.keysFile)
+	checkLastIndexEntry(s.valuesIndex, s.valuesFile)
+	checkIndexSigns(s.keysIndex, s.valuesIndex)
 	if EnableIndexCaching {
 		s.cache[string(key)] = true
 	}
@@ -749,6 +812,7 @@ func (s *ExtentKeyValStore) MapFunc(f func([]byte, []byte) error) (map[string]bo
 func (s *ExtentKeyValStore) Delete(key []byte) error {
 	s.globalLock.Lock()
 	defer s.globalLock.Unlock()
+	checkIndexSigns(s.keysIndex, s.valuesIndex)
 
 	if EnableIndexCaching {
 		s.cacheWrites++ // count this flush
@@ -811,6 +875,8 @@ func (s *ExtentKeyValStore) Delete(key []byte) error {
 		return err
 	}
 
+
+
 	//Write the value to the values data file
 	valuePos, err := s.valuesFile.Seek(0, 2)                   ;panicOnError("Seek to end of values file", err)
 
@@ -819,13 +885,18 @@ func (s *ExtentKeyValStore) Delete(key []byte) error {
 
 	//Overwrite the current key with a tombstone
 	valueTombstone := -valuePos
+	fmt.Printf("Value tombstone is %d\n", valueTombstone)
 	eofValueIndex, err := s.valuesIndex.Seek(0, 2)             ;panicOnError("Seek to end of values index file", err)
 
 	valueIndexStart := eofValueIndex - 8
-	_, err = s.valuesIndex.Seek(valueIndexStart, 0)                       ;panicOnError("Seek to last value index", err)
+	pos, err := s.valuesIndex.Seek(valueIndexStart, 0)                       ;panicOnError("Seek to last value index", err)
 
+	if pos != valueIndexStart {
+		panic("Seek to last value index failed")
+	}
 
-	//Write the index tombstone
+	// Overwrite the last value index with the tombstone
+	fmt.Printf("Writing value tombstone at index %d, position is now %d\n", valueIndexStart/8, valueTombstone)
 	err = binary.Write(s.valuesIndex, binary.BigEndian, valueTombstone)   ; panicOnError("Write value tombstone", err)
 
 	// Calculate the end of the value data file
@@ -843,10 +914,16 @@ func (s *ExtentKeyValStore) Delete(key []byte) error {
 	_, err = s.valuesIndex.Seek(0, 2)                                     ;panicOnError("Seek to end of values index file", err)
 
 
+	// Write the next value index (the end of the value data file)
+	fmt.Printf("Writing next value at index %d, position is now %d\n", eofValueIndex/8, nextValuePos)
 	err = binary.Write(s.valuesIndex, binary.BigEndian, valueFileLength)     ;panicOnError("Write to values index file", err)
 
 	fmt.Println("Deleted key", trimTo40(key))
 	s.DumpIndexLockFree()
+
+	checkLastIndexEntry(s.keysIndex, s.keysFile)
+	checkLastIndexEntry(s.valuesIndex, s.valuesFile)
+	checkIndexSigns(s.keysIndex, s.valuesIndex)
 
 	if EnableIndexCaching {
 		s.cache[string(key)] = false
@@ -883,7 +960,6 @@ func (s *ExtentKeyValStore) DumpIndex() error {
 
 
 func (s *ExtentKeyValStore) DumpIndexLockFree() error {
-
 
 	fmt.Println("==========DUMPING INDEX==========")
 	keyIndexFileLength, err := s.keysIndex.Seek(0, 2)
@@ -923,6 +999,7 @@ func (s *ExtentKeyValStore) DumpIndexLockFree() error {
 
 	}
 	fmt.Println("==========END DUMPING INDEX==========")
+	checkIndexSigns(s.keysIndex, s.valuesIndex)
 	return nil
 }
 
@@ -1003,6 +1080,12 @@ func (s *ExtentKeyValStore) LockFreeMapFunc(f func([]byte, []byte) error) (map[s
 // it updates the “latest” state. In the end, if at least one matching record was found,
 // the final state (insertion or deletion) is returned.
 func (s *ExtentKeyValStore) searchDbForKeyExists(searchKey []byte, keysIndex *os.File, keysFile *os.File, keysIndexCache []byte) (bool, int64, error) {
+
+	checkLastIndexEntry(s.keysIndex, s.keysFile)
+	checkLastIndexEntry(s.valuesIndex, s.valuesFile)
+	checkIndexSigns(s.keysIndex, s.valuesIndex)
+
+
 	keyIndexFileLength, err := s.keysIndex.Seek(0, 2)
 	panicOnError("Get key index file length", err)
 
@@ -1093,6 +1176,12 @@ func (s *ExtentKeyValStore) Exists(key []byte) bool {
 }
 
 func (s *ExtentKeyValStore) LockFreeGet(key []byte) ([]byte, error) {
+
+	checkLastIndexEntry(s.keysIndex, s.keysFile)
+	checkLastIndexEntry(s.valuesIndex, s.valuesFile)
+	checkIndexSigns(s.keysIndex, s.valuesIndex)
+
+
 	// Reset file positions
 	_, err := s.keysFile.Seek(0, 0)
 	if err != nil {

@@ -77,24 +77,12 @@ var StoreCreators = []StoreCreator{
 	{"StarLSMJsonKV", func(d string, b int) (KvLike, error) {
 		return NewStarLSM(d, b, JsonKVCreator)
 	}},
-	{"LineLSMJsonKV", func(d string, b int) (KvLike, error) {
-		return LineLSMCreator(d, b, JsonKVCreator)
-	}},
-	/*{"TreeLSMPudge", func(d string, b int) (KvLike, error) {
-		return NewTreeLSM(d, b, PudgeCreator)
-	}},
-	{"StarLSMPudge", func(d string, b int) (KvLike, error) { 
-		return NewStarLSM(d, b, PudgeCreator) 
-	}},
-	{"LineLSMPudge", func(d string, b int) (KvLike, error) {
-		return LineLSMCreator(d, b, PudgeCreator) 
-	}},
-	*/
+
 	{"EnsembleBolt", func(d string, b int) (KvLike, error) { 
 		return EnsembleCreator(d, b, BoltDbCreator) 
 	}},
 	{"EnsembleExtent", func(d string, b int) (KvLike, error) { 
-		return EnsembleCreator(d, b, ExtentCreator) 
+		return EnsembleCreator(d, b, ExtentCreator)
 	}},
 	{"TreeLSMBolt", func(d string, b int) (KvLike, error) { 
 		return NewTreeLSM(d, b, BoltDbCreator) 
@@ -108,12 +96,7 @@ var StoreCreators = []StoreCreator{
 	{"StarLSMExtent", func(d string, b int) (KvLike, error) {
 		return NewStarLSM(d, b, ExtentCreator)
 	}},
-	{"LineLSMBolt", func(d string, b int) (KvLike, error) {
-		return LineLSMCreator(d, b, BoltDbCreator)
-	}},
-	{"LineLSMExtent", func(d string, b int) (KvLike, error) { 
-		return LineLSMCreator(d, b, ExtentCreator) 
-	}},
+
 }
 
 // BenchmarkResult holds the results of a benchmark run

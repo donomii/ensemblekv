@@ -107,20 +107,20 @@ func GetDBLimits(storeName string) DBLimits {
     )
     
     switch storeName {
-    case "BoltDB", "LineBoltStore", "EnsembleBoltDbStore", "LineLSMBoltStore", "TreeLSMBoltStore":
+    case "BoltDB", "LineBoltStore", "EnsembleBoltDbStore", "TreeLSMBoltStore":
         return DBLimits{
             maxKeySize:   boltMaxKeySize,   // Bolt's hard limit
             maxValueSize: testMaxValueSize, // Limited for testing speed
             name:         storeName,
         }
 
-    case "ExtentKeyValueStore", "EnsembleExtentStore", "LineLSMExtentStore", "TreeLSMExtentStore":
+    case "ExtentKeyValueStore", "EnsembleExtentStore",  "TreeLSMExtentStore":
         return DBLimits{
             maxKeySize:   testMaxKeySize,   // Limited for testing speed
             maxValueSize: testMaxValueSize, // Limited for testing speed
             name:         storeName,
         }
-        
+
     default:
         // Conservative default limits matching Bolt's constraints
         return DBLimits{
