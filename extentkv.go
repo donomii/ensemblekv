@@ -45,7 +45,7 @@ func (s *ExtentKeyValStore) maybePrintCacheStats() {
 }
 
 func NewExtentKeyValueStore(directory string, blockSize int) (*ExtentKeyValStore, error) {
-	fmt.Println("Creating new ExtentKeyValueStore with enhanced caching")
+	fmt.Println("Creating new ExtentKeyValueStore with enhanced caching at directory", directory)
 	os.MkdirAll(directory, 0755)
 	keysFilePath := directory + "/keys.dat"
 	valuesFilePath := directory + "/values.dat"
@@ -397,6 +397,7 @@ func readDataAtIndexPos(indexPosition int64, indexFile *os.File, dataFile *os.Fi
 func (s *ExtentKeyValStore) Close() error {
 	s.globalLock.Lock()
 	defer s.globalLock.Unlock()
+	fmt.Println("Closing ExtentKeyValueStore at", s.keysFile.Name())
 	if err := s.keysFile.Close(); err != nil {
 		return err
 	}
