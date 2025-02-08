@@ -272,6 +272,9 @@ func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
             {32, 128},
             {64, 1024},
             {128, 1024 * 1024},
+            {256, 10 * 1024 * 1024},
+            {512, 100 * 1024 * 1024},
+            {1024, 1024 * 1024 * 1024},
         }
 
         for _, size := range sizes {
