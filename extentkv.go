@@ -133,14 +133,20 @@ func NewExtentKeyValueStore(directory string, blockSize int) (*ExtentKeyValStore
 	}
 
 
-	return &ExtentKeyValStore{
+
+
+	s:= &ExtentKeyValStore{
 		keysFile:    keysFile,
 		valuesFile:  valuesFile,
 		keysIndex:   keysIndex,
 		valuesIndex: valuesIndex,
 		blockSize:   blockSize,
 		cache: make(map[string]bool),
-	}, nil
+	}
+
+	s.loadKeyCache()
+
+	return s, nil
 }
 
 
