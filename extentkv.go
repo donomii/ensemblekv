@@ -478,7 +478,7 @@ func (s *ExtentKeyValStore) loadKeyCache() error {
 		//fmt.Printf("KEY   Entry: %d, BytePosition: %d\n", entry, keyPos)
 		keyData, deleted, err := readDataAtIndexPos(int64(entry*8), s.keysIndex, s.keysFile, s.keysIndexCache)
 		panicOnError("Read key data", err)
-		fmt.Printf("searchDbForKeyExists KEY   Entry: %d, BytePosition: %d, Deleted: %t, Key: %s\n", entry, keyPos, deleted, trimTo40(keyData))
+		//fmt.Printf("searchDbForKeyExists KEY   Entry: %d, BytePosition: %d, Deleted: %t, Key: %s\n", entry, keyPos, deleted, trimTo40(keyData))
 
 		var valuePos int64
 		_, err = s.valuesIndex.Seek(int64(entry)*8, 0)
@@ -488,7 +488,7 @@ func (s *ExtentKeyValStore) loadKeyCache() error {
 			break
 		}
 
-		fmt.Printf("searchDbForKeyExists VALUE Entry: %d, BytePosition: %d\n", entry, valuePos)
+		//fmt.Printf("searchDbForKeyExists VALUE Entry: %d, BytePosition: %d\n", entry, valuePos)
 
 		s.cache[string(keyData)] = !deleted
 
@@ -1108,7 +1108,7 @@ func (s *ExtentKeyValStore) searchDbForKeyExists(searchKey []byte, keysIndex *os
 		//fmt.Printf("KEY   Entry: %d, BytePosition: %d\n", entry, keyPos)
 		keyData, deleted, err := readDataAtIndexPos(int64(entry*8), s.keysIndex, s.keysFile, s.keysIndexCache)
 		panicOnError("Read key data", err)
-		fmt.Printf("searchDbForKeyExists KEY   Entry: %d, BytePosition: %d, Deleted: %t, Key: %s\n", entry, keyPos, deleted, trimTo40(keyData))
+		//fmt.Printf("searchDbForKeyExists KEY   Entry: %d, BytePosition: %d, Deleted: %t, Key: %s\n", entry, keyPos, deleted, trimTo40(keyData))
 
 		var valuePos int64
 		_, err = s.valuesIndex.Seek(int64(entry)*8, 0)
@@ -1118,19 +1118,19 @@ func (s *ExtentKeyValStore) searchDbForKeyExists(searchKey []byte, keysIndex *os
 			break
 		}
 
-		fmt.Printf("searchDbForKeyExists VALUE Entry: %d, BytePosition: %d\n", entry, valuePos)
+		//fmt.Printf("searchDbForKeyExists VALUE Entry: %d, BytePosition: %d\n", entry, valuePos)
 
 
 		if bytes.Equal(keyData, searchKey) {
-			fmt.Printf("searchDbForKeyExists: Matched keydata %v to search key %v\n", trimTo40(keyData), trimTo40(searchKey))
+			//fmt.Printf("searchDbForKeyExists: Matched keydata %v to search key %v\n", trimTo40(keyData), trimTo40(searchKey))
 			if !deleted {
 				outFound = true
 				outPos = entry * 8
-				fmt.Printf("searchDbForKeyExists: Selected key %s at position %d\n", trimTo40(keyData), outPos)
+				//fmt.Printf("searchDbForKeyExists: Selected key %s at position %d\n", trimTo40(keyData), outPos)
 			} else {
 				outFound = false
 				outPos = -1
-				fmt.Printf("searchDbForKeyExists: Selected key %s at position %d is deleted\n", trimTo40(keyData), outPos)
+				//fmt.Printf("searchDbForKeyExists: Selected key %s at position %d is deleted\n", trimTo40(keyData), outPos)
 			}
 		}
 
