@@ -38,16 +38,6 @@ func JsonKVCreator(directory string, blockSize int) (KvLike, error) {
 	return store, nil
 }
 
-// Helper function to encode bytes for JSON storage
-func encodeBytes(b []byte) string {
-	return string(b)
-}
-
-// Helper function to decode bytes from JSON storage
-func decodeBytes(s string) []byte {
-	return []byte(s)
-}
-
 // load reads the JSON file into memory
 func (s *JsonKV) load() error {
 	data, err := os.ReadFile(s.filename)
@@ -56,28 +46,21 @@ func (s *JsonKV) load() error {
 	}
 
 	// Create temporary map for string-based storage
-	tempMap := make(map[string]string)
+	tempMap := make(map[string][]byte)
 	if err := json.Unmarshal(data, &tempMap); err != nil {
 		return fmt.Errorf("failed to unmarshal data: %w", err)
 	}
 
-	// Convert string values back to bytes
-	for k, v := range tempMap {
-		s.data[k] = decodeBytes(v)
-	}
+	s.data = tempMap
 
 	return nil
 }
 
 // save writes the in-memory data to JSON file
 func (s *JsonKV) save() error {
-	// Create temporary map for string-based storage
-	tempMap := make(map[string]string)
-	for k, v := range s.data {
-		tempMap[k] = encodeBytes(v)
-	}
 
-	data, err := json.MarshalIndent(tempMap, "", "  ")
+
+	data, err := json.MarshalIndent(s.data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal data: %w", err)
 	}

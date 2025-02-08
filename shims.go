@@ -250,7 +250,13 @@ func (s *BoltDbShim) Get(key []byte) ([]byte, error) {
 		v = b.Get(key)
 		return nil
 	})
-	return v, nil
+	var err error
+	if v != nil && len(v) == 0 {
+		// Key exists but value is empty
+	} else if v == nil {
+		err = fmt.Errorf("key not found")
+	}
+	return v, err
 }
 
 func (s *BoltDbShim) Put(key []byte, val []byte) error {
