@@ -8,9 +8,185 @@ import (
 	"os"
 	"sync"
 	"github.com/donomii/goof"
+	"io"
 )
 
 var EnableIndexCaching bool = true // Feature flag for index caching
+
+/*
+=======================================================================
+EXTENT KEY-VALUE STORE: FORMAT & OPERATION OVERVIEW
+=======================================================================
+
+The ExtentKeyValStore is an append-only, file-based key–value store designed
+for high-throughput writes and efficient lookups. It separates data storage
+from index management and leverages optional in-memory caching to speed up
+accesses to index information. This document describes the file formats,
+data layouts, caching mechanisms, and overall operational workflow for the
+store, serving as a guide for future maintainers.
+
+-----------------------------------------------------------------------
+File Organization & Data Layout
+-----------------------------------------------------------------------
+
+There are four primary files managed by the store, all created in a given
+directory:
+
+1. **Data Files**
+   - **keys.dat**: Holds the raw bytes of all keys, appended sequentially.
+   - **values.dat**: Holds the raw bytes of all values, appended sequentially.
+
+   *How Data Files Work:*
+   - Every `Put()` operation appends the key to *keys.dat* and the
+     corresponding value to *values.dat*.
+   - The actual position (byte offset) where a key or value is written is
+     determined by the current end-of-file pointer.
+
+2. **Index Files**
+   - **keys.index**: Maintains a sequence of 8-byte (int64) BigEndian numbers
+     that indicate cumulative end offsets in *keys.dat*.
+   - **values.index**: Maintains a similar sequence for *values.dat*.
+
+   *Index File Format & Purpose:*
+   - **Initialization:**  
+     - When first created, an index file is seeded with a single value
+       `0`, representing the initial offset.
+   - **Record Boundaries:**  
+     - Each time data is appended, the store writes a new cumulative
+       offset into the corresponding index file.
+     - The length of a given record is computed by subtracting the previous
+       index entry from the current one. For example, if a key starts at byte
+       offset 10 and the next index entry is 15, the key's length is 5 bytes.
+   - **Tombstones (Deletions):**  
+     - Deletions are handled logically by marking records as “deleted”.
+     - A deletion is recorded by writing a negative offset into the index file.
+     - When reading an index entry, a negative value indicates a tombstone,
+       and its absolute value is used to locate the original data in the data file.
+
+-----------------------------------------------------------------------
+Caching Mechanism & In-Memory Structures
+-----------------------------------------------------------------------
+
+To reduce disk I/O and improve performance, the store incorporates two levels
+of caching:
+
+1. **Index Caching:**
+   - Controlled by the global flag `EnableIndexCaching`.
+   - When enabled, the entire contents of *keys.index* and *values.index*
+     are read into memory (stored in `keysIndexCache` and `valuesIndexCache`).
+   - Helper functions (e.g., `readIndexAt`) use the in-memory cache if available,
+     falling back to file I/O if caching is disabled or not yet loaded.
+   - The caches are flushed (set to `nil`) on write operations (e.g., `Put()`
+     or `Delete()`) to ensure consistency.
+
+2. **Key Existence Map:**
+   - An in-memory map (`map[string]bool`) is maintained to track the presence
+     of keys.  
+   - A key mapped to `true` indicates that it exists; `false` indicates that it
+     has been deleted (a tombstone).
+   - If a key is not present, then the status is unknown and the disk is queried.
+   - This map is built via `loadKeyCache()`, which scans the key index and data
+     files using a lock-free mapping function (`LockFreeMapFunc`).
+   - This cache allows for a fast existence check in methods such as `Exists()`
+     and also aids in the `Get()` operation.
+
+3. **Cache Statistics:**
+   - The store tracks metrics including cache hits, misses, flushes, and loads.
+   - The helper `maybePrintCacheStats()` increments a request counter and prints
+     these statistics periodically, assisting maintainers in monitoring cache
+     performance and diagnosing issues.
+
+-----------------------------------------------------------------------
+Operational Workflow
+-----------------------------------------------------------------------
+
+1. **Initialization (`NewExtentKeyValueStore`):**
+   - The store creates or opens the four files. If the index files do not exist,
+     they are created and initialized with a `0`.
+   - It validates index integrity by reading the last index entry and comparing
+     it to the actual size of the corresponding data file. If mismatches are
+     detected, the index file is truncated to the expected size.
+   - Finally, the key existence map is loaded into memory via `loadKeyCache()`,
+     optionally using the in-memory index cache if enabled.
+
+2. **Insertion/Update (`Put()`):**
+   - Acquires a global lock to ensure thread safety.
+   - **Writing Data:**
+     - Seeks to the end of *keys.dat* and appends the key bytes.
+     - Immediately writes the new cumulative offset (key end position) to
+       *keys.index*.
+     - Repeats the process for the value using *values.dat* and *values.index*.
+   - **Cache Management:**
+     - Flushes (invalidates) the index caches to ensure subsequent reads
+       reload fresh data.
+     - Updates the in-memory key map by marking the inserted key as existing.
+   - **Monitoring:**
+     - Increments the cache flush counter.
+
+3. **Retrieval (`Get()` & `LockFreeGet()`):**
+   - Acquires the global lock and invokes `maybePrintCacheStats()` to update
+     cache metrics.
+   - **Cache Check:**
+     - Checks the in-memory key map for the existence of the requested key.
+     - Updates hit/miss counters accordingly.
+   - **Disk Lookup:**
+     - Despite a positive cache hit, the actual value is always read from disk.
+     - `LockFreeGet()` resets file pointers, ensures the index caches are loaded,
+       and then searches the *keys.index* from the end backward (to get the latest
+       update) for a matching key.
+     - When found (and if not marked as deleted), it retrieves the corresponding
+       value from *values.dat* using the matching offsets from *values.index*.
+
+4. **Deletion (`Delete()`):**
+   - Acquires the global lock and flushes the index caches.
+   - Marks the key as deleted by:
+     - Writing a tombstone (negative offset) into the index files.
+     - Updating the in-memory key map (setting the key’s value to `false`).
+   - The underlying data is not removed from the data files; it remains as part
+     of the append-only log, but subsequent lookups will consider the key deleted.
+
+5. **Index Dumping & Listing:**
+   - **DumpIndex():** Iterates through the index files, printing each entry’s
+     byte position. Useful for debugging and verifying the integrity of index files.
+   - **List() & MapFunc():** Provide mechanisms to scan and retrieve a list of
+     keys or perform operations on all key–value pairs by iterating from the end
+     of the index files backward.
+
+6. **Flush & Close:**
+   - **Flush():** Explicitly synchronizes all open file descriptors to disk,
+     ensuring that all writes are durable.
+   - **Close():** Gracefully closes all files, releasing the global lock to
+     ensure no operations are mid-flight.
+
+-----------------------------------------------------------------------
+Key Design Considerations & Benefits
+-----------------------------------------------------------------------
+
+- **Append-Only Log Structure:**
+  - Simplifies writes and enhances durability since data is always appended.
+  - Simplifies recovery and consistency checks via the index files.
+
+- **Index Files & Record Boundaries:**
+  - The use of cumulative offsets stored in index files allows for simple
+    computation of record lengths without embedding size headers in the data.
+
+- **Tombstone-Based Deletion:**
+  - Enables logical deletion without expensive file rewrites, preserving the
+    sequential, append-only nature of the data files.
+
+- **In-Memory Caching:**
+  - Reduces disk I/O by caching the index files and maintaining a key–existence
+    map.
+  - Provides immediate feedback on cache efficiency through built-in counters,
+    helping identify potential performance bottlenecks.
+
+- **Concurrency & Locking:**
+  - A single global lock (`globalLock`) ensures that operations modifying the
+    store are thread-safe, while the “lock-free” read functions assume that
+    file positions are reset appropriately on each call.
+
+=======================================================================
+*/
 
 // --- Add these new fields to ExtentKeyValStore struct:
 type ExtentKeyValStore struct {
@@ -202,24 +378,83 @@ func (s *ExtentKeyValStore) loadValuesIndexCache() error {
     return nil
 }
 
-// --- Modify loadKeyCache() to count loads.
+
+// loadKeyCache loads the entire keys.index and keys.dat files into memory,
+// processing records in forward order. This routine should only be called
+// when EnableIndexCaching is true.
 func (s *ExtentKeyValStore) loadKeyCache() error {
-    // If using index caching, ensure that the keys index cache is loaded.
-    if EnableIndexCaching && s.keysIndexCache == nil {
-        if err := s.loadKeysIndexCache(); err != nil {
-            return fmt.Errorf("loadKeyCache: failed to load keys index cache: %w", err)
-        }
-    }
-    // Use our existing helper to build the full in‑memory key map.
-    keyMap, err := s.LockFreeMapFunc(func(key, value []byte) error {
-        return nil
-    })
-    if err != nil {
-        return fmt.Errorf("loadKeyCache: failed to scan key index: %w", err)
-    }
-    s.cache = keyMap
-    s.cacheLoads++ // count this as a load
-    return nil
+	// Sanity check: this routine assumes caching is enabled.
+	if !EnableIndexCaching {
+		return fmt.Errorf("loadKeyCache should not be called when caching is disabled")
+	}
+
+	// Reinitialize the in‑memory cache map.
+	s.cache = make(map[string]bool)
+
+	// Step 1: Load the entire keys.index file into memory.
+	// If the cache is not already loaded, load it.
+	if s.keysIndexCache == nil {
+		if err := s.loadKeysIndexCache(); err != nil {
+			return fmt.Errorf("loadKeyCache: failed to load keys index cache: %w", err)
+		}
+	}
+	keyIndexData := s.keysIndexCache
+
+	// Ensure the keys index file length is a multiple of 8 bytes.
+	if len(keyIndexData)%8 != 0 {
+		return fmt.Errorf("loadKeyCache: keys index file corrupt: length (%d) is not a multiple of 8", len(keyIndexData))
+	}
+
+	// Step 2: Load the entire keys.dat file into memory.
+	_, err := s.keysFile.Seek(0, 0)
+	if err != nil {
+		return fmt.Errorf("loadKeyCache: failed to seek keys file: %w", err)
+	}
+	keysData, err := io.ReadAll(s.keysFile)
+	if err != nil {
+		return fmt.Errorf("loadKeyCache: failed to read keys file: %w", err)
+	}
+
+	// Step 3: Parse the keys.index data into an array of int64 offsets.
+	numOffsets := len(keyIndexData) / 8
+	if numOffsets < 1 {
+		return fmt.Errorf("loadKeyCache: keys index file empty")
+	}
+	offsets := make([]int64, numOffsets)
+	buf := bytes.NewReader(keyIndexData)
+	for i := 0; i < numOffsets; i++ {
+		var off int64
+		if err := binary.Read(buf, binary.BigEndian, &off); err != nil {
+			return fmt.Errorf("loadKeyCache: failed to read offset %d: %w", i, err)
+		}
+		offsets[i] = off
+	}
+
+	// Step 4: Iterate forward through the records.
+	// The first entry (offsets[0]) is expected to be 0.
+	// Each subsequent offset marks the end of a record.
+	// If an offset is negative, it indicates that the record represents a deletion.
+	// Later records overwrite earlier ones in the cache.
+	for i := 1; i < numOffsets; i++ {
+		start := offsets[i-1]
+		end := offsets[i]
+		deleted := false
+
+		// A negative offset indicates a deletion; take its absolute value.
+		if end < 0 {
+			deleted = true
+			end = -end
+		}
+		if end > int64(len(keysData)) {
+			return fmt.Errorf("loadKeyCache: keys index entry %d (%d) exceeds keys file length (%d)", i, end, len(keysData))
+		}
+		keyBytes := keysData[start:end]
+		// Blindly update the cache: later (more recent) records override earlier ones.
+		s.cache[string(keyBytes)] = !deleted
+	}
+
+	s.cacheLoads++ // Update the cache load counter.
+	return nil
 }
 
 // Helper to read from index cache or file
