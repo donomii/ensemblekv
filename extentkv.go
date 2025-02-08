@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"internal/diff"
 	"io"
 	"os"
 	"sync"
@@ -222,6 +221,12 @@ func (s *ExtentKeyValStore) maybePrintCacheStats() {
 	}
 }
 
+func panicOnError(reason string, err error) {
+	if err != nil {
+		panic(err)
+	}
+}
+
 func NewExtentKeyValueStore(directory string, blockSize int) (*ExtentKeyValStore, error) {
 	fmt.Println("Creating new ExtentKeyValueStore with enhanced caching at directory", directory)
 	os.MkdirAll(directory, 0755)
@@ -233,49 +238,33 @@ func NewExtentKeyValueStore(directory string, blockSize int) (*ExtentKeyValStore
 	if !goof.Exists(keysIndexFilePath) {
 		//Write a single 0 to the keys index file
 		keysIndex, err := os.OpenFile(keysIndexFilePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
-		if err != nil {
-			panic(err)
-		}
+		  panicOnError("Open keys index file for writing", err)
 		err = binary.Write(keysIndex, binary.BigEndian, int64(0))
-		if err != nil {
-			panic(err)
-		}
+		  panicOnError("Write a 0 to init an index file", err)
 		keysIndex.Close()
 	}
 
 	if !goof.Exists(valuesIndexFilePath) {
 		//Write a single 0 to the values index file
 		valuesIndex, err := os.OpenFile(valuesIndexFilePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
-		if err != nil {
-			panic(err)
-		}
+		  panicOnError("Open values index file for writing", err)
 		err = binary.Write(valuesIndex, binary.BigEndian, int64(0))
-		if err != nil {
-			panic(err)
-		}
+		  panicOnError("Write a 0 to init an index file", err)
 		valuesIndex.Close()
 	}
 
 	keysFile, err := os.OpenFile(keysFilePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		panic(err)
-	}
+	panicOnError("Open keys data file", err)
 
 	keysIndex, err := os.OpenFile(keysIndexFilePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		panic(err)
-	}
+	panicOnError("Open keys index file", err)
 
 	//Read the last index item to get the end of the file.  If this is different to the file size, then the file is corrupt and we should truncate it to size
 	_, err = keysIndex.Seek(-8, 2)
-	if err != nil {
-		panic(err)
-	}
+	panicOnError("Seek to last entry in keys index file", err)
 	var keysFileEnd int64
 	err = binary.Read(keysIndex, binary.BigEndian, &keysFileEnd)
-	if err != nil {
-		panic(err)
-	}
+	panicOnError("Read last entry in keys index file", err)
 	if keysFileEnd < 0 {
 		keysFileEnd = -keysFileEnd
 	}
@@ -296,25 +285,17 @@ func NewExtentKeyValueStore(directory string, blockSize int) (*ExtentKeyValStore
 	}
 
 	valuesIndex, err := os.OpenFile(valuesIndexFilePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		panic(err)
-	}
+	panicOnError("Open values index file", err)
 
 	valuesFile, err := os.OpenFile(valuesFilePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		panic(err)
-	}
+	panicOnError("Open values data file", err)
 
 	//Read the last index item to get the end of the file.  If this is different to the file size, then the file is corrupt and we should truncate it to size
 	_, err = valuesIndex.Seek(-8, 2)
-	if err != nil {
-		panic(err)
-	}
+	panicOnError("Seek to last entry in values index file", err)
 	var valuesFileEnd int64
 	err = binary.Read(valuesIndex, binary.BigEndian, &valuesFileEnd)
-	if err != nil {
-		panic(err)
-	}
+	panicOnError("Read last entry in values index file", err)
 	if valuesFileEnd < 0 {
 		valuesFileEnd = -valuesFileEnd
 	}
@@ -488,131 +469,39 @@ func (s *ExtentKeyValStore) loadKeyCache() error {
 // its deletion flag and value boundaries are used to either report that the key is deleted
 // or to load its corresponding value from values.dat.
 func (s *ExtentKeyValStore) forwardScanForKey(key []byte) ([]byte, error) {
-	// Reset file positions for a fresh sequential scan.
-	if _, err := s.keysIndex.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("forwardScanForKey: seek keys index: %w", err)
-	}
-	if _, err := s.valuesIndex.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("forwardScanForKey: seek values index: %w", err)
-	}
-	if _, err := s.keysFile.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("forwardScanForKey: seek keys file: %w", err)
-	}
-	if _, err := s.valuesFile.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("forwardScanForKey: seek values file: %w", err)
-	}
+	keysIndexFileLength, err := s.keysFile.Seek(0, 2)
+	panicOnError("Seek to end of keys index file", err)
 
-	// Read the first (initial) offset from keys.index and values.index.
-	// This should be 0.
-	var prevKeyOffset int64
-	if err := binary.Read(s.keysIndex, binary.BigEndian, &prevKeyOffset); err != nil {
-		return nil, fmt.Errorf("forwardScanForKey: reading initial keys index offset: %w", err)
-	}
-	var prevValueOffset int64
-	if err := binary.Read(s.valuesIndex, binary.BigEndian, &prevValueOffset); err != nil {
-		return nil, fmt.Errorf("forwardScanForKey: reading initial values index offset: %w", err)
-	}
-
-	// These variables will track the most recent matching record.
-	var found bool
-	var latestDeleted bool
-	var latestValueStart, latestValueEnd int64
-
-	// Now, loop over each record in the index files.
-	// Each iteration reads the next key index entry (8 bytes) and its corresponding value index entry.
-	for {
-		// Read the next key offset.
-		var curKeyOffset int64
-		if err := binary.Read(s.keysIndex, binary.BigEndian, &curKeyOffset); err == io.EOF {
-			// End of file reached.
-			break
-		} else if err != nil {
-			return nil, fmt.Errorf("forwardScanForKey: reading keys index: %w", err)
-		}
-
-		// Read the next value offset.
-		var curValueOffset int64
-		if err := binary.Read(s.valuesIndex, binary.BigEndian, &curValueOffset); err == io.EOF {
-			break
-		} else if err != nil {
-			return nil, fmt.Errorf("forwardScanForKey: reading values index: %w", err)
-		}
-
-		// Determine whether this key record represents a deletion.
-		deleted := false
-		effectiveKeyOffset := curKeyOffset
-		if curKeyOffset < 0 {
-			deleted = true
-			effectiveKeyOffset = -curKeyOffset
-		}
-
-		// Compute the length of the key record in keys.dat.
-		keyLen := effectiveKeyOffset - prevKeyOffset
-		if keyLen < 0 {
-			return nil, fmt.Errorf("forwardScanForKey: invalid key length computed")
-		}
-		keyBuf := make([]byte, keyLen)
-		// Seek to the beginning of the current key record.
-		if _, err := s.keysFile.Seek(prevKeyOffset, io.SeekStart); err != nil {
-			return nil, fmt.Errorf("forwardScanForKey: seeking keys file: %w", err)
-		}
-		if _, err := io.ReadFull(s.keysFile, keyBuf); err != nil {
-			return nil, fmt.Errorf("forwardScanForKey: reading key record: %w", err)
-		}
-
-		// If the key matches the one we're looking for, update our “latest record” info.
-		if bytes.Equal(key, keyBuf) {
-			found = true
-			latestDeleted = deleted
-			// For the corresponding value record, the boundaries come from values.index.
-			effectiveValueOffset := curValueOffset
-			if curValueOffset < 0 {
-				effectiveValueOffset = -curValueOffset
-			}
-			latestValueStart = prevValueOffset
-			latestValueEnd = effectiveValueOffset
-		}
-
-		// Update the previous offsets for the next iteration.
-		if curKeyOffset < 0 {
-			prevKeyOffset = -curKeyOffset
-		} else {
-			prevKeyOffset = curKeyOffset
-		}
-		if curValueOffset < 0 {
-			prevValueOffset = -curValueOffset
-		} else {
-			prevValueOffset = curValueOffset
-		}
+	found, offset, err := searchDbForKeyExists(key, s.keysIndex, s.keysFile, s.keysIndexCache)
+	if err != nil {
+		return nil, fmt.Errorf("forwardScanForKey: not found: %v", err)
 	}
 
 	if !found {
-		return nil, fmt.Errorf("forwardScanForKey: key not found")
-	}
-	if latestDeleted {
-		return nil, fmt.Errorf("forwardScanForKey: key has been deleted")
+		return nil, fmt.Errorf("forwardScanForKey: key not found or deleted")
 	}
 
-	// With the most recent (non-deleted) record determined, read the corresponding value from values.dat.
-	valueLen := latestValueEnd - latestValueStart
-	if valueLen < 0 {
-		return nil, fmt.Errorf("forwardScanForKey: invalid value length computed")
-	}
-	valueBuf := make([]byte, valueLen)
-	if _, err := s.valuesFile.Seek(latestValueStart, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("forwardScanForKey: seeking values file: %w", err)
-	}
-	if _, err := io.ReadFull(s.valuesFile, valueBuf); err != nil {
-		return nil, fmt.Errorf("forwardScanForKey: reading value record: %w", err)
+	if keysIndexFileLength == offset{
+		return nil, fmt.Errorf("forwardScanForKey: key not found or deleted")
 	}
 
-	return valueBuf, nil
+	value, deleted, err := readDataAtIndexPos(offset, s.valuesIndex, s.valuesFile, s.valuesIndexCache)
+	if err != nil {
+		return nil, fmt.Errorf("forwardScanForKey: failed to read value: %v", err)
+	}
+
+	if deleted {
+		return nil, fmt.Errorf("forwardScanForKey: key marked as deleted")
+	}
+
+	return value, nil
 }
 
 // Helper to read from index cache or file
 func (s *ExtentKeyValStore) readIndexAt(indexFile *os.File, cache []byte, offset int64, data interface{}) error {
 	if EnableIndexCaching && cache != nil {
 		if offset < 0 || offset+8 > int64(len(cache)) {
+			panic(fmt.Sprintf("index cache read out of bounds: offset=%d, len=%d", offset, len(cache)))
 			return fmt.Errorf("index cache read out of bounds: offset=%d, len=%d", offset, len(cache))
 		}
 		return binary.Read(bytes.NewReader(cache[offset:offset+8]), binary.BigEndian, data)
@@ -729,58 +618,77 @@ func (s *ExtentKeyValStore) Get(key []byte) ([]byte, error) {
 
 // Modify readDataAtIndexPos to use caching
 func readDataAtIndexPos(indexPosition int64, indexFile *os.File, dataFile *os.File, cache []byte) ([]byte, bool, error) {
+	dataFileLength , err := dataFile.Seek(0, 2)
+	indexFileLength , err := indexFile.Seek(0, 2)
 	deleted := false
 	var dataPos int64 = 0
 
 	// Read from cache or file
-	var err error
 	if EnableIndexCaching && cache != nil {
+
 		err = binary.Read(bytes.NewReader(cache[indexPosition:indexPosition+8]), binary.BigEndian, &dataPos)
 	} else {
+		if indexFileLength == indexPosition +8 {
+			return nil, false, fmt.Errorf("readDataAtIndexPos: invalid index position, data file length is %d, and position is %d (this is the end of file marker, you read one too far)", indexFileLength, indexPosition)
+		}
+		if indexPosition+8 > indexFileLength {
+			panic(fmt.Sprintf("attempt to read past endof file: offset=%d, len=%d", indexPosition, indexFileLength))
+			return nil, false, fmt.Errorf("readDataAtIndexPos: invalid index position %v greater than indexfile of length %v", indexPosition, indexFileLength)
+		}
 		_, err = indexFile.Seek(indexPosition, 0)
 		if err != nil {
-			return nil, false, err
+			return nil, false, fmt.Errorf("failed to seek to index position: %w", err)
 		}
 		err = binary.Read(indexFile, binary.BigEndian, &dataPos)
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("failed to read at index position: %v, length %v, file length %v, %v", indexPosition, 8, indexFileLength, err)
 	}
 
-	// Rest of the function remains the same...
+
 	if dataPos < 0 {
 		deleted = true
 		dataPos = -dataPos
 	}
 
-	_, err = dataFile.Seek(dataPos, 0)
-	if err != nil {
-		return nil, false, err
-	}
+
 
 	// Read next index position
 	var nextDataPos int64
 	if EnableIndexCaching && cache != nil {
 		if indexPosition+8 >= int64(len(cache)) {
-			return nil, false, fmt.Errorf("invalid index position")
+			return nil, false, fmt.Errorf("invalid index position %v for indexfile of length %v", indexPosition, indexFileLength)
 		}
 		err = binary.Read(bytes.NewReader(cache[indexPosition+8:indexPosition+16]), binary.BigEndian, &nextDataPos)
 	} else {
+		_, err = indexFile.Seek(indexPosition+8, 0)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to seek to data position: %w", err)
+		}
 		err = binary.Read(indexFile, binary.BigEndian, &nextDataPos)
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("readDataAtIndexPos: failed to read next index position: %w", err)
 	}
 
 	if nextDataPos < 0 {
 		nextDataPos = -nextDataPos
 	}
 
+	if nextDataPos > dataFileLength {
+		return nil, false, fmt.Errorf("invalid next data position %v for datafile of length %v", nextDataPos, dataFileLength)
+	}
+
 	size := nextDataPos - dataPos
+
 	buffer := make([]byte, size)
+	_, err = dataFile.Seek(dataPos, 0)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to seek to data position: %w", err)
+	}
 	_, err = dataFile.Read(buffer)
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("failed to read data: %w", err)
 	}
 
 	return buffer, deleted, nil
@@ -791,16 +699,16 @@ func (s *ExtentKeyValStore) Close() error {
 	defer s.globalLock.Unlock()
 	fmt.Println("Closing ExtentKeyValueStore at", s.keysFile.Name())
 	if err := s.keysFile.Close(); err != nil {
-		return err
+		return fmt.Errorf("failed to close keys file: %w", err)
 	}
 	if err := s.valuesFile.Close(); err != nil {
-		return err
+		return fmt.Errorf("failed to close values file: %w", err)
 	}
 	if err := s.keysIndex.Close(); err != nil {
-		return err
+		return fmt.Errorf("failed to close keys index: %w", err)
 	}
 	if err := s.valuesIndex.Close(); err != nil {
-		return err
+		return fmt.Errorf("failed to close values index: %w", err)
 	}
 	return nil
 }
@@ -833,79 +741,96 @@ func (s *ExtentKeyValStore) Delete(key []byte) error {
 	if EnableIndexCaching {
 		s.cacheWrites++ // count this flush
 	}
-
-	// If the in‑memory cache is being used, check whether the key is already marked deleted.
-	if s.cache != nil {
-		if state, exists := s.cache[string(key)]; exists && !state {
-			return errors.New("key not found (already deleted)")
-		}
-	}
-
-	// --- Process the keys file & keys.index ---
-	// Append the key bytes to the keys data file.
-	keyPos, err := s.keysFile.Seek(0, io.SeekEnd)
+	//Write the key to the keys data file
+	keyPos, err := s.keysFile.Seek(0, 2)
 	if err != nil {
-		return fmt.Errorf("Delete: seeking keys file: %w", err)
+		return err
 	}
-	written, err := s.keysFile.Write(key)
+	keySize, err := s.keysFile.Write(key)
 	if err != nil {
-		return fmt.Errorf("Delete: writing key data: %w", err)
-	}
-	if written != len(key) {
-		return errors.New("Delete: key size mismatch")
+		return err
 	}
 
-	// Overwrite the last 8-byte index entry in keys.index with a tombstone.
-	// A tombstone is written as the negative of the file offset (keyPos).
-	tombstone := -keyPos
-	eofKeyIndex, err := s.keysIndex.Seek(0, io.SeekEnd)
-	if err != nil {
-		return fmt.Errorf("Delete: seeking keys index: %w", err)
-	}
-	// Compute the position of the last index entry.
-	keyIndexPos := eofKeyIndex - 8
-	if _, err := s.keysIndex.Seek(keyIndexPos, io.SeekStart); err != nil {
-		return fmt.Errorf("Delete: seeking to last key index entry: %w", err)
-	}
-	if err := binary.Write(s.keysIndex, binary.BigEndian, tombstone); err != nil {
-		return fmt.Errorf("Delete: writing tombstone to keys index: %w", err)
-	}
-	// NOTE: We do NOT append a new pointer afterward.
-
-	// --- Process the values file & values.index ---
-	// For values, write the key bytes (or a placeholder) to the values data file.
-	valuePos, err := s.valuesFile.Seek(0, io.SeekEnd)
-	if err != nil {
-		return fmt.Errorf("Delete: seeking values file: %w", err)
-	}
-	written, err = s.valuesFile.Write(key)
-	if err != nil {
-		return fmt.Errorf("Delete: writing value data: %w", err)
-	}
-	if written != len(key) {
-		return errors.New("Delete: value size mismatch")
+	//Check the written key size is the same as the key size
+	if keySize != len(key) {
+		panic("Key size mismatch")
 	}
 
-	// Overwrite the last 8-byte index entry in values.index with a tombstone.
-	tombstoneVal := -valuePos
-	eofValueIndex, err := s.valuesIndex.Seek(0, io.SeekEnd)
+	//Overwrite the current key index with a tombstone
+	keyTombstone := -keyPos
+	eofKeyIndex, err := s.keysIndex.Seek(0, 2)
 	if err != nil {
-		return fmt.Errorf("Delete: seeking values index: %w", err)
+		return err
 	}
-	valueIndexPos := eofValueIndex - 8
-	if _, err := s.valuesIndex.Seek(valueIndexPos, io.SeekStart); err != nil {
-		return fmt.Errorf("Delete: seeking to last values index entry: %w", err)
+	keyIndexStart := eofKeyIndex - 8
+	_, err = s.keysIndex.Seek(keyIndexStart, 0)
+	if err != nil {
+		return err
 	}
-	if err := binary.Write(s.valuesIndex, binary.BigEndian, tombstoneVal); err != nil {
-		return fmt.Errorf("Delete: writing tombstone to values index: %w", err)
-	}
-	// Again, we do NOT append a new pointer afterward.
+	err = binary.Write(s.keysIndex, binary.BigEndian, keyTombstone)
+	//fmt.Printf("Wrote tombstone at index %d, position is now %d\n", keyIndexStart/8, keyTombstone)
 
-	// Update the in‑memory cache if it's used.
-	if s.cache != nil {
+	nextKeyPos := keyPos + int64(keySize)
+	keyFileLength, err := s.keysFile.Seek(0, 2)
+	if err != nil {
+		return err
+	}
+	if nextKeyPos != keyFileLength {
+		panic("Key file is corrupt")
+	}
+
+	// Now write the next key index (the end of the key data file)
+	s.keysIndex.Seek(0, 2)
+	err = binary.Write(s.keysIndex, binary.BigEndian, nextKeyPos)
+	if err != nil {
+		return err
+	}
+
+	//Write the value to the values data file
+	valuePos, err := s.valuesFile.Seek(0, 2)
+	if err != nil {
+		return err
+	}
+	valueSize, err := s.valuesFile.Write(key)
+	if err != nil {
+		return err
+	}
+
+	//Overwrite the current key with a tombstone
+	valueTombstone := -valuePos
+	eofValueIndex, err := s.valuesIndex.Seek(0, 2)
+	if err != nil {
+		return err
+	}
+	valueIndexStart := eofValueIndex - 8
+	_, err = s.valuesIndex.Seek(valueIndexStart, 0)
+	if err != nil {
+		return err
+	}
+	err = binary.Write(s.valuesIndex, binary.BigEndian, valueTombstone)
+
+	//Write the next value index (the end of the value data file)
+	nextValuePos := valuePos + int64(valueSize)
+	valueFileLength, err := s.valuesFile.Seek(0, 2)
+	if err != nil {
+		return err
+	}
+	if nextValuePos != valueFileLength {
+		panic("Value file is corrupt")
+	}
+
+	s.valuesIndex.Seek(0, 2)
+	err = binary.Write(s.valuesIndex, binary.BigEndian, nextValuePos)
+	if err != nil {
+		return err
+	}
+
+
+	s.DumpIndex()
+
+	if EnableIndexCaching {
 		s.cache[string(key)] = false
 	}
-
 	return nil
 }
 
@@ -930,16 +855,19 @@ func (s *ExtentKeyValStore) Flush() error {
 }
 
 func (s *ExtentKeyValStore) DumpIndex() error {
-	s.globalLock.Lock()
-	defer s.globalLock.Unlock()
-	_, err := s.keysIndex.Seek(0, 0)
-	if err != nil {
-		panic(err)
-	}
+
+	//s.globalLock.Lock()
+	//defer s.globalLock.Unlock()
+
+
+	valueDataFileLength, err := s.valuesFile.Seek(0, 2)
+	panicOnError("Get value data file length", err)
+
+
+	_, err = s.keysIndex.Seek(0, 0)
+	panicOnError("Seek to start of keys index file", err)
 	_, err = s.valuesIndex.Seek(0, 0)
-	if err != nil {
-		panic(err)
-	}
+	panicOnError("Seek to start of values index file", err)
 	entry := 0
 	for {
 		var keyPos int64
@@ -947,14 +875,25 @@ func (s *ExtentKeyValStore) DumpIndex() error {
 		if err != nil {
 			break
 		}
-		fmt.Printf("KEY Entry: %d, BytePosition: %d\n", entry, keyPos)
+		fmt.Printf("KEY   Entry: %d, BytePosition: %d\n", entry, keyPos)
+		key, deleted, err := readDataAtIndexPos(int64(entry*8), s.keysIndex, s.keysFile, s.keysIndexCache)
+		panicOnError("Read key data", err)
+		fmt.Printf("KEY   Entry: %d, BytePosition: %d, Deleted: %t, Key: %s\n", entry, keyPos, deleted, trimTo40(key))
+
+
 		var valuePos int64
 		err = binary.Read(s.valuesIndex, binary.BigEndian, &valuePos)
 		if err != nil {
 			break
 		}
+
+
 		fmt.Printf("VALUE Entry: %d, BytePosition: %d\n", entry, valuePos)
 		entry++
+
+		if valuePos == valueDataFileLength {
+			break
+		}
 	}
 	return nil
 }
@@ -972,29 +911,20 @@ func (s *ExtentKeyValStore) Size() int64 {
 }
 
 func (s *ExtentKeyValStore) LockFreeMapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
-	_, err := s.keysFile.Seek(0, 0)
-	if err != nil {
-		panic(err)
-	}
+	dataFileLen, err := s.keysFile.Seek(0, io.SeekEnd)
+	_, err = s.keysFile.Seek(0, 0)
+	panicOnError("Seek to start of keys data file", err)
 	_, err = s.keysIndex.Seek(0, 0)
-	if err != nil {
-		panic(err)
-	}
+	panicOnError("Seek to start of keys index file", err)
 	_, err = s.valuesFile.Seek(0, 0)
-	if err != nil {
-		panic(err)
-	}
+	panicOnError("Seek to start of values data file", err)
 	_, err = s.valuesIndex.Seek(0, 0)
-	if err != nil {
-		panic(err)
-	}
+	panicOnError("Seek to start of values index file", err)
 
 	var validKeys = make(map[string]bool)
 	//start at the end of the keysIndex file
 	keyIndexPosStart, err := s.keysIndex.Seek(-8, 2)
-	if err != nil {
-		panic(err)
-	}
+	panicOnError("Seek to end of keys index file", err)
 
 	for {
 		keyIndexPosStart = keyIndexPosStart - 8
@@ -1002,9 +932,13 @@ func (s *ExtentKeyValStore) LockFreeMapFunc(f func([]byte, []byte) error) (map[s
 			return validKeys, nil
 		}
 
+		if keyIndexPosStart == dataFileLen {
+			panic("Key index position is at the end of the data file")
+		}
+
 		keyData, deleted, err := readDataAtIndexPos(keyIndexPosStart, s.keysIndex, s.keysFile, s.keysIndexCache)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("LockFreeMapFunc: failed to read key data: %w", err)
 		}
 
 		// Have we seen this key before?
@@ -1021,13 +955,17 @@ func (s *ExtentKeyValStore) LockFreeMapFunc(f func([]byte, []byte) error) (map[s
 			validKeys[string(keyData)] = true
 		}
 
+		if keyIndexPosStart == dataFileLen {
+			panic("Key index position is at the end of the data file")
+		}
+
 		valueBuffer, _, err := readDataAtIndexPos(keyIndexPosStart, s.valuesIndex, s.valuesFile, s.valuesIndexCache)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("LockFreeMapFunc: failed to read value data: %w", err)
 		}
 		err = f(keyData, valueBuffer)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("LockFreeMapFunc: failed to process key-value pair: %w", err)
 		}
 	}
 }
@@ -1036,20 +974,29 @@ func (s *ExtentKeyValStore) LockFreeMapFunc(f func([]byte, []byte) error) (map[s
 // For each record, it extracts the key from keys.dat and, if it matches the provided key,
 // it updates the “latest” state. In the end, if at least one matching record was found,
 // the final state (insertion or deletion) is returned.
-func searchDbForKeyExists(key []byte, keysIndex *os.File, keysFile *os.File, keysIndexCache []byte) (bool, error) {
+func searchDbForKeyExists(key []byte, keysIndex *os.File, keysFile *os.File, keysIndexCache []byte) (bool, int64, error) {
+	dataFileLen, err := keysFile.Seek(0, io.SeekEnd)
+	panicOnError("Seek to end of keys data file", err)
+	KeyStartOffset := int64(-1)
+	indexOffset := int64(0)
+
 	// Reset file positions for a fresh sequential scan.
 	if _, err := keysIndex.Seek(0, io.SeekStart); err != nil {
-		return false, fmt.Errorf("searchDbForKeyExists: seeking keys index: %w", err)
+		panicOnError("Seek to start of keys index file", err)
 	}
 	if _, err := keysFile.Seek(0, io.SeekStart); err != nil {
-		return false, fmt.Errorf("searchDbForKeyExists: seeking keys file: %w", err)
+		panicOnError("Seek to start of keys data file", err)
 	}
 
 	// Read the initial offset from keys.index.
 	// This offset should be 0 and serves as the beginning of the first record.
 	var prevOffset int64
 	if err := binary.Read(keysIndex, binary.BigEndian, &prevOffset); err != nil {
-		return false, fmt.Errorf("searchDbForKeyExists: reading initial offset: %w", err)
+		panicOnError("Reading initial offset from keys index", err)
+	}
+
+	if prevOffset != 0 {
+		return false, -1, errors.New("searchDbForKeyExists: initial offset is not 0, data file may be corrupt")
 	}
 
 	// Initialize our found flag and a variable to record the latest deletion status.
@@ -1060,11 +1007,13 @@ func searchDbForKeyExists(key []byte, keysIndex *os.File, keysFile *os.File, key
 	// Each record boundary is determined by a pair of consecutive offsets.
 	for {
 		var curOffset int64
+		indexOffset += 8
 		if err := binary.Read(keysIndex, binary.BigEndian, &curOffset); err == io.EOF {
 			break // End of index file reached.
 		} else if err != nil {
-			return false, fmt.Errorf("searchDbForKeyExists: reading next offset: %w", err)
+			return false, -1, fmt.Errorf("searchDbForKeyExists: reading next offset: %w", err)
 		}
+
 
 		// A negative offset indicates that this record is a deletion (a tombstone).
 		deleted := false
@@ -1072,28 +1021,34 @@ func searchDbForKeyExists(key []byte, keysIndex *os.File, keysFile *os.File, key
 		if curOffset < 0 {
 			deleted = true
 			effectiveCur = -curOffset
+			// If this points to the end of the data file, it means the data file is corrupted, since a tombstone should point to the start of the record, and always be fallowed by a pointer, possibly to the end of the file
+			if effectiveCur == dataFileLen {
+				return false, -1, errors.New("searchDbForKeyExists: data file corrupted")
+			}
 		}
 
 		// Compute the length of this key record.
 		recordLen := effectiveCur - prevOffset
 		if recordLen < 0 {
-			return false, errors.New("searchDbForKeyExists: computed negative record length")
+			return false, -1, errors.New("searchDbForKeyExists: computed negative record length")
 		}
+
 
 		// Read the key record from keys.dat.
 		keyRecord := make([]byte, recordLen)
 		n, err := io.ReadFull(keysFile, keyRecord)
 		if err != nil {
-			return false, fmt.Errorf("searchDbForKeyExists: reading key record: %w", err)
+			return false, -1, fmt.Errorf("searchDbForKeyExists: reading key record: %w", err)
 		}
 		if int64(n) != recordLen {
-			return false, fmt.Errorf("searchDbForKeyExists: incomplete key record: expected %d bytes, got %d", recordLen, n)
+			panic("searchDbForKeyExists: read less bytes than expected")
 		}
 
 		// If this record matches the provided key, record its state.
 		if bytes.Equal(key, keyRecord) {
 			found = true
 			latestDeleted = deleted
+			KeyStartOffset = indexOffset -8
 		}
 
 		// Update prevOffset to the end of the current record for the next iteration.
@@ -1102,11 +1057,11 @@ func searchDbForKeyExists(key []byte, keysIndex *os.File, keysFile *os.File, key
 
 	// If no record for the key was encountered, report that it was not found.
 	if !found {
-		return false, errors.New("key not found")
+		return false, -1, errors.New("key not found")
 	}
 
 	// Otherwise, return true if the last occurrence was an insertion (not deleted).
-	return !latestDeleted, nil
+	return !latestDeleted, int64(KeyStartOffset), nil
 }
 
 // --- Modify Exists() to use and update the cache counters.
@@ -1121,7 +1076,7 @@ func (s *ExtentKeyValStore) Exists(key []byte) bool {
 		if len(s.cache) == 0 {
 			if err := s.loadKeyCache(); err != nil {
 				// If the cache cannot be loaded, fall back to the previous behavior.
-				found, err := searchDbForKeyExists(key, s.keysIndex, s.keysFile, s.keysIndexCache)
+				found, _, err := searchDbForKeyExists(key, s.keysIndex, s.keysFile, s.keysIndexCache)
 				return err == nil && found
 			}
 		}
@@ -1133,7 +1088,7 @@ func (s *ExtentKeyValStore) Exists(key []byte) bool {
 		}
 		s.cacheMisses++ // not found in cache
 	} else {
-		found, err := searchDbForKeyExists(key, s.keysIndex, s.keysFile, s.keysIndexCache)
+		found, _, err := searchDbForKeyExists(key, s.keysIndex, s.keysFile, s.keysIndexCache)
 		return err == nil && found
 	}
 	return false
@@ -1220,7 +1175,7 @@ func (s *ExtentKeyValStore) LockFreeGet(key []byte) ([]byte, error) {
 		s.valuesIndexCache,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read value data: %w", err)
+		return nil, fmt.Errorf("LockFreeGetfailed to read value data: %w", err)
 	}
 
 	return data, nil

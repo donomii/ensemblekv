@@ -114,8 +114,8 @@ func PersistenceTests(t *testing.T, store KvLike, creator func(directory string,
             
             if !bytes.Equal(value, expectedValue) {
                 t.Errorf("Value mismatch for key %s after reopening", key)
-                t.Errorf("Expected: %v", expectedValue)
-                t.Errorf("Got: %v", value)
+                t.Errorf("Expected: %v", trimTo40( expectedValue))
+                t.Errorf("Got: %v", trimTo40(value))
                 t.Errorf("Expected length: %d", len(expectedValue))
                 t.Errorf("Got length: %d", len(value))
             }
@@ -309,6 +309,7 @@ func MixedSizeKeyValuePairs(t *testing.T, store KvLike, storeName string) {
             
             // Verify deletion
             if store.Exists(key) {
+                store.DumpIndex()
                 t.Error("Key still exists after deletion")
             }
         })

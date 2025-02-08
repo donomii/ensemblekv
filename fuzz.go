@@ -228,13 +228,13 @@ func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
         value := []byte("test_value")
         
         err := store.Put(key, value)
-        if err != nil {
-            t.Fatalf("Failed to put value: %v", err)
-        }
+
+        panicOnError("Failed to PUT value", err)
 
         retrieved, err := store.Get(key)
         if err != nil {
-            t.Fatalf("Failed to get value: %v", err)
+            store.DumpIndex()
+            t.Fatalf("Failed to GET value: %v", err)
         }
 
         if !bytes.Equal(retrieved, value) {
