@@ -12,7 +12,7 @@ import (
 	"github.com/donomii/goof"
 )
 
-var EnableIndexCaching bool = false // Feature flag for index caching
+var EnableIndexCaching bool = true // Feature flag for index caching
 var ExtraChecks bool = false
 
 /*
@@ -455,63 +455,48 @@ func (s *ExtentKeyValStore) loadKeyCache() error {
 	// Reinitialize the in‑memory cache.
 	s.cache = make(map[string]bool)
 
-	// Ensure the keys.index cache is loaded.
-	if s.keysIndexCache == nil {
-		if err := s.loadKeysIndexCache(); err != nil {
-			return fmt.Errorf("loadKeyCache: failed to load keys index cache: %w", err)
+	keyIndexFileLength, err := s.keysIndex.Seek(0, 2)
+	panicOnError("Get key index file length", err)
+
+	_, err = s.keysIndex.Seek(0, 0)
+	panicOnError("Seek to start of keys index file", err)
+	_, err = s.valuesIndex.Seek(0, 0)
+	panicOnError("Seek to start of values index file", err)
+	entry := int64(0)
+
+	for {
+		if entry*8+8 >= int64(keyIndexFileLength) {
+			break
 		}
-	}
-	keyIndexData := s.keysIndexCache
-
-	// Ensure the keys.index file length is a multiple of 8 bytes.
-	if len(keyIndexData)%8 != 0 {
-		return fmt.Errorf("loadKeyCache: keys index file corrupt: length (%d) is not a multiple of 8", len(keyIndexData))
-	}
-
-	// Parse the entire keys.index into an array of int64 offsets.
-	numOffsets := len(keyIndexData) / 8
-	if numOffsets < 1 {
-		return fmt.Errorf("loadKeyCache: keys index file empty")
-	}
-	offsets := make([]int64, numOffsets)
-	buf := bytes.NewReader(keyIndexData)
-	for i := 0; i < numOffsets; i++ {
-		var off int64
-		if err := binary.Read(buf, binary.BigEndian, &off); err != nil {
-			return fmt.Errorf("loadKeyCache: failed to read offset %d: %w", i, err)
+		var keyPos int64
+		_, err := s.keysIndex.Seek(int64(entry)*8, 0)
+		panicOnError("Seek to current entry in keys index file", err)
+		err = binary.Read(s.keysIndex, binary.BigEndian, &keyPos)
+		if err != nil {
+			break
 		}
-		offsets[i] = off
-	}
+		//fmt.Printf("KEY   Entry: %d, BytePosition: %d\n", entry, keyPos)
+		keyData, deleted, err := readDataAtIndexPos(int64(entry*8), s.keysIndex, s.keysFile, s.keysIndexCache)
+		panicOnError("Read key data", err)
+		fmt.Printf("searchDbForKeyExists KEY   Entry: %d, BytePosition: %d, Deleted: %t, Key: %s\n", entry, keyPos, deleted, trimTo40(keyData))
 
-	// Read the entire keys.dat file into memory.
-	if _, err := s.keysFile.Seek(0, 0); err != nil {
-		return fmt.Errorf("loadKeyCache: failed to seek keys file: %w", err)
-	}
-	keysData, err := io.ReadAll(s.keysFile)
-	if err != nil {
-		return fmt.Errorf("loadKeyCache: failed to read keys file: %w", err)
-	}
-
-	// Use a variable 'prev' to always hold the positive start offset.
-	prev := offsets[0] // This should be 0.
-	for i := 1; i < numOffsets; i++ {
-		cur := offsets[i]
-		deleted := false
-		if cur < 0 {
-			deleted = true
-			cur = -cur // Use the absolute value for this record's end.
+		var valuePos int64
+		_, err = s.valuesIndex.Seek(int64(entry)*8, 0)
+		panicOnError("Seek to current entry in values index file", err)
+		err = binary.Read(s.valuesIndex, binary.BigEndian, &valuePos)
+		if err != nil {
+			break
 		}
-		if cur > int64(len(keysData)) {
-			return fmt.Errorf("loadKeyCache: keys index entry %d (%d) exceeds keys file length (%d)", i, cur, len(keysData))
-		}
-		// Use the positive 'prev' offset as the start.
-		keyBytes := keysData[prev:cur]
-		// Later records override earlier ones.
-		s.cache[string(keyBytes)] = !deleted
 
-		// Always update 'prev' to the current absolute end.
-		prev = cur
+		fmt.Printf("searchDbForKeyExists VALUE Entry: %d, BytePosition: %d\n", entry, valuePos)
+
+		s.cache[string(keyData)] = !deleted
+
+
+		entry++
+
 	}
+
 
 	s.cacheLoads++ // update the load counter
 	return nil
@@ -592,6 +577,9 @@ func (s *ExtentKeyValStore) Put(key, value []byte) error {
 
 	if EnableIndexCaching {
 		s.cacheWrites++ // count this flush
+		s.keysIndexCache = nil
+		s.valuesIndexCache = nil
+		s.cache = make(map[string]bool)
 	}
 
 	// Move to end of data file for values.
@@ -708,18 +696,20 @@ func readDataAtIndexPos(indexPosition int64, indexFile *os.File, dataFile *os.Fi
 	deleted := false
 	var dataPos int64 = 0
 
+	if indexFileLength == indexPosition+8 {
+		panic(fmt.Errorf("readDataAtIndexPos: invalid index position, data file length is %d, and position is %d (this is the end of file marker, you read one too far)", indexFileLength, indexPosition))
+	}
+
+	if indexPosition+8 > indexFileLength {
+		panic(fmt.Sprintf("attempt to read past end of file: offset=%d, index file length len=%d", indexPosition, indexFileLength))
+		return nil, false, fmt.Errorf("readDataAtIndexPos: invalid index position %v greater than indexfile of length %v", indexPosition, indexFileLength)
+	}
+
 	// Read from cache or file
 	if EnableIndexCaching && cache != nil {
 
 		err = binary.Read(bytes.NewReader(cache[indexPosition:indexPosition+8]), binary.BigEndian, &dataPos)
 	} else {
-		if indexFileLength == indexPosition+8 {
-			panic(fmt.Errorf("readDataAtIndexPos: invalid index position, data file length is %d, and position is %d (this is the end of file marker, you read one too far)", indexFileLength, indexPosition))
-		}
-		if indexPosition+8 > indexFileLength {
-			panic(fmt.Sprintf("attempt to read past end of file: offset=%d, index file length len=%d", indexPosition, indexFileLength))
-			return nil, false, fmt.Errorf("readDataAtIndexPos: invalid index position %v greater than indexfile of length %v", indexPosition, indexFileLength)
-		}
 		_, err = indexFile.Seek(indexPosition, 0)
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to seek to index position: %w", err)
