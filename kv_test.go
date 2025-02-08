@@ -56,6 +56,7 @@ func StartKVStoreOperations(t *testing.T, creator func(directory string, blockSi
 
 // MixedSizeKeyValuePairs tests various key-value size combinations
 func MixedSizeKeyValuePairs(t *testing.T, store KvLike, storeName string) {
+    fmt.Println("Testing MixedSizeKeyValuePairs")
     limits := GetDBLimits(storeName)
     
     sizes := []struct {

@@ -38,13 +38,14 @@ type ExtentKeyValStore struct {
 // --- Add this helper method to increment the request counter and print stats every 100 requests.
 func (s *ExtentKeyValStore) maybePrintCacheStats() {
     s.requestCount++
-    if s.requestCount%100 == 0 {
+    //if s.requestCount%1 == 0 {
         fmt.Printf("Cache stats: hits=%d, misses=%d, flushes=%d, loads=%d\n",
             s.cacheHits, s.cacheMisses, s.cacheFlushes, s.cacheLoads)
-    }
+    //}
 }
 
 func NewExtentKeyValueStore(directory string, blockSize int) (*ExtentKeyValStore, error) {
+	fmt.Println("Creating new ExtentKeyValueStore with enhanced caching")
 	os.MkdirAll(directory, 0755)
 	keysFilePath := directory + "/keys.dat"
 	valuesFilePath := directory + "/values.dat"
