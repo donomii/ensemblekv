@@ -13,6 +13,7 @@ import (
 )
 
 var EnableIndexCaching bool = false // Feature flag for index caching
+var ExtraChecks bool = false
 
 /*
 =======================================================================
@@ -228,6 +229,9 @@ func panicOnError(reason string, err error) {
 }
 
 func checkLastIndexEntry(indexFile *os.File, dataFile *os.File) {
+	if ! ExtraChecks {
+		return
+	}
 	_, err := indexFile.Seek(-8, 2) 					; panicOnError("Seek to last entry in index file", err)
 	var lastEntry int64
 	err = binary.Read(indexFile, binary.BigEndian, &lastEntry) 	; panicOnError("Read last entry in index file", err)
@@ -244,6 +248,9 @@ func checkLastIndexEntry(indexFile *os.File, dataFile *os.File) {
 }
 
 func checkIndexSigns(keyIndex *os.File, valueIndex *os.File) {
+	if ! ExtraChecks {
+		return
+	}
 	_, err := keyIndex.Seek(0, 0)						; panicOnError("Seek to start of index file", err)
 	_, err = valueIndex.Seek(0, 0)									; panicOnError("Seek to start of index file", err)
 	for {
