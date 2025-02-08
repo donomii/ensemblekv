@@ -226,15 +226,21 @@ func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
     t.Run("Basic Put and Get", func(t *testing.T) {
         key := []byte("test_key")
         value := []byte("test_value")
-        
+
+        fmt.Printf("Putting key %v\n", trimTo40(key))
         err := store.Put(key, value)
+        if err != nil {
+            store.DumpIndex()
+            t.Fatalf("Failed to PUT key/value pair: %v", err)
+        }
 
-        panicOnError("Failed to PUT value", err)
 
+
+        fmt.Printf("Getting key %v\n", trimTo40(key))
         retrieved, err := store.Get(key)
         if err != nil {
             store.DumpIndex()
-            t.Fatalf("Failed to GET value: %v", err)
+            t.Fatalf("Failed to GET value(%v): %v", trimTo40(key), err)
         }
 
         if !bytes.Equal(retrieved, value) {
@@ -249,6 +255,7 @@ func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
         key := randomBytes(minKeySize, keySize)
         value := randomBytes(minValueSize, valueSize)
 
+        fmt.Printf("Putting key %v\n", trimTo40(key))
         err := store.Put(key, value)
         if err != nil {
             t.Fatalf("Failed to put large key/value pair: %v", err)
@@ -256,7 +263,7 @@ func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
 
         retrieved, err := store.Get(key)
         if err != nil {
-            t.Fatalf("Failed to get large value: %v", err)
+            t.Fatalf("Failed to get large value(%v): %v", trimTo40(key), err)
         }
 
         if !bytes.Equal(retrieved, value) {
@@ -300,8 +307,8 @@ func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
             }
 
             if !bytes.Equal(retrieved, value) {
-                t.Errorf("Value mismatch for size %d/%d",
-                    size.keySize, size.valueSize)
+                t.Errorf("Value mismatch for size %d/%d (%v). Expected %s, got %s",
+                    size.keySize, size.valueSize, trimTo40(key), trimTo40(value), trimTo40(retrieved))
             }
         }
     })

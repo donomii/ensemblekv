@@ -4,6 +4,7 @@ import (
     "bytes"
     "fmt"
     "testing"
+    "os"
     "time"
 )
 
@@ -286,31 +287,36 @@ func MixedSizeKeyValuePairs(t *testing.T, store KvLike, storeName string) {
             value := randomBytes(size.valueSize, size.valueSize)
             
             // Test Put
+            fmt.Println("Putting key: ", trimTo40(key))
             err := store.Put(key, value)
             if err != nil {
                 t.Fatalf("Failed to put %dx%d pair: %v", size.keySize, size.valueSize, err)
             }
             
             // Test Get
+            fmt.Printf("Getting key: %v\n", trimTo40(key))
             retrieved, err := store.Get(key)
             if err != nil {
-                t.Fatalf("Failed to get %dx%d pair: %v", size.keySize, size.valueSize, err)
+                t.Fatalf("Failed to get %dx%d pair(%v): %v", size.keySize, size.valueSize, trimTo40(key),err)
             }
             
             if !bytes.Equal(retrieved, value) {
-                t.Errorf("Value mismatch for %dx%d pair", size.keySize, size.valueSize)
+                t.Errorf("Value mismatch for %dx%d pair (%v) expected: %v, got: %v", size.keySize, size.valueSize, trimTo40(key), trimTo40(value), trimTo40(retrieved))
             }
 
             // Test Delete
+            fmt.Printf("Deleting key: %v\n", trimTo40(key))
             err = store.Delete(key)
             if err != nil {
                 t.Fatalf("Failed to delete %dx%d pair: %v", size.keySize, size.valueSize, err)
             }
-            
+
             // Verify deletion
             if store.Exists(key) {
                 store.DumpIndex()
+                fmt.Printf("Key: %v still exists after deletion\n", trimTo40(key))
                 t.Error("Key still exists after deletion")
+                os.Exit(0)
             }
         })
     }
