@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -20,6 +21,8 @@ func main() {
 	key_h := flag.String("keyhex", "", "Print history for this key")
 	key_s := flag.String("key", "", "Print history for this key")
 	outputDir := flag.String("output", "", "Output directory for recovered values")
+	valueToSet := flag.String("value", "", "Set this value for the key")
+	valueFile := flag.String("value-file", "", "Set value from this file for the key")
 	flag.Parse()
 
 	if *storeDir == "" {
@@ -46,6 +49,35 @@ func main() {
 			log.Fatalf("Invalid hex key: %v", err)
 		}
 		key_b = keyb
+	}
+
+	// Check if we're setting a value
+	if *valueToSet != "" || *valueFile != "" {
+		if len(key_b) == 0 {
+			log.Fatal("Please specify a key with --key or --keyhex when setting a value")
+		}
+
+		var valueData []byte
+		if *valueFile != "" {
+			// Read value from file
+			valueData, err = os.ReadFile(*valueFile)
+			if err != nil {
+				log.Fatalf("Failed to read value file: %v", err)
+			}
+			fmt.Printf("Read %d bytes from file %s\n", len(valueData), *valueFile)
+		} else {
+			// Use direct value
+			valueData = []byte(*valueToSet)
+		}
+
+		// Set the value
+		err = store.Put(key_b, valueData)
+		if err != nil {
+			log.Fatalf("Failed to set value: %v", err)
+		}
+		fmt.Printf("Successfully set value for key %s (%d bytes)\n", 
+			hex.EncodeToString(key_b), len(valueData))
+		return
 	}
 
 	// Get history for the key
@@ -151,7 +183,7 @@ func saveValuesToFiles(values [][]byte, outputDir, keyHex string) {
 
 	// Save each value to a separate file
 	for i, value := range values {
-		fileName := filepath.Join(outputDir, fmt.Sprintf("%s.value%d.bin", keyHex, i+1))
+		fileName := filepath.Join(outputDir, fmt.Sprintf("%svalue%d.bin", keyHex, i+1))
 		if err := os.WriteFile(fileName, value, 0644); err != nil {
 			log.Printf("Failed to write value %d to file: %v", i+1, err)
 			continue
@@ -159,7 +191,7 @@ func saveValuesToFiles(values [][]byte, outputDir, keyHex string) {
 
 		// If value looks like text, also save a text version
 		if isPrintableASCII(value) {
-			textFileName := filepath.Join(outputDir, fmt.Sprintf("%s.value%d.txt", keyHex, i+1))
+			textFileName := filepath.Join(outputDir, fmt.Sprintf("%svalue%d.txt", keyHex, i+1))
 			if err := os.WriteFile(textFileName, value, 0644); err != nil {
 				log.Printf("Failed to write text value %d to file: %v", i+1, err)
 			}
