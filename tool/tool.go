@@ -1,0 +1,170 @@
+package main
+
+import (
+	"encoding/hex"
+	"flag"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/donomii/ensemblekv" // Replace with your actual import path
+)
+
+func main() {
+	// Command line flags
+	storeType := flag.String("type", "", "Store type (ensemble, tree, star, line)")
+	baseType := flag.String("base", "extent", "Base store type for ensemble/tree/star (extent, bolt, json,pudge)")
+	storeDir := flag.String("dir", "", "Directory containing the store")
+	key_h := flag.String("keyhex", "", "Print history for this key")
+	key_s := flag.String("key", "", "Print history for this key")
+	outputDir := flag.String("output", "", "Output directory for recovered values")
+	flag.Parse()
+
+	if *storeDir == "" {
+		log.Fatal("Please specify store directory with -dir")
+	}
+
+	if *storeType == "" {
+		log.Fatal("Please specify store type with -type")
+	}
+
+	// Open the store
+	store, err := openStore(*storeType, *baseType, *storeDir)
+	if err != nil {
+		log.Fatalf("Failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	var key_b []byte
+	key_b = []byte(*key_s)
+	if *key_h != "" {
+		// Convert hex key to bytes
+		keyb, err := hex.DecodeString(*key_h)
+		if err != nil {
+			log.Fatalf("Invalid hex key: %v", err)
+		}
+		key_b = keyb
+	}
+
+	// Get history for the key
+	values, err := store.KeyHistory(key_b)
+	if err != nil {
+		log.Printf("Warning: %v", err)
+	}
+
+	if len(values) == 0 {
+		fmt.Println("No values found for key:", *key_h)
+		return
+	}
+
+	fmt.Printf("Found %d values for key %s\n", len(values), *key_h)
+
+	// Output each value summary
+	for i, value := range values {
+		fmt.Printf("\n--- Value #%d ---\n", i+1)
+		if len(value) > 40 {
+			fmt.Printf("First 40 bytes: %s\n", hex.EncodeToString(value[:40]))
+			fmt.Printf("Length: %d bytes\n", len(value))
+		} else {
+			fmt.Printf("Full value: %s\n", hex.EncodeToString(value))
+		}
+
+		// Try to print as text if it looks printable
+		if isPrintableASCII(value) {
+			if len(value) > 100 {
+				fmt.Printf("As text (first 100 chars): %s...\n", string(value[:100]))
+			} else {
+				fmt.Printf("As text: %s\n", string(value))
+			}
+		}
+	}
+
+	// Save to files if requested
+	if *outputDir != "" {
+		saveValuesToFiles(values, *outputDir, *key_h)
+	}
+}
+
+// openStore creates the appropriate store based on command-line arguments
+func openStore(storeType, baseType, storeDir string) (ensemblekv.KvLike, error) {
+	var baseCreator func(string, int) (ensemblekv.KvLike, error)
+
+	// Determine base store creator
+	switch strings.ToLower(baseType) {
+	case "extent":
+		baseCreator = ensemblekv.ExtentCreator
+	case "bolt":
+		baseCreator = ensemblekv.BoltDbCreator
+	case "json":
+		baseCreator = ensemblekv.JsonKVCreator
+	default:
+		return nil, fmt.Errorf("unknown base store type: %s", baseType)
+	}
+
+	// Create the appropriate store type
+	blockSize := 4096 // Default block size
+	switch strings.ToLower(storeType) {
+	case "extent":
+		return ensemblekv.ExtentCreator(storeDir, blockSize)
+	case "bolt":
+		return ensemblekv.BoltDbCreator(storeDir, blockSize)
+	case "json":
+		return ensemblekv.JsonKVCreator(storeDir, blockSize)
+	case "ensemble":
+		return ensemblekv.EnsembleCreator(storeDir, blockSize, baseCreator)
+	case "tree":
+		return ensemblekv.NewTreeLSM(storeDir, blockSize, baseCreator)
+	case "star":
+		return ensemblekv.NewStarLSM(storeDir, blockSize, baseCreator)
+	case "line":
+		return ensemblekv.LineLSMCreator(storeDir, blockSize, baseCreator)
+	default:
+		return nil, fmt.Errorf("unknown store type: %s", storeType)
+	}
+}
+
+// isPrintableASCII checks if a byte slice is mostly printable ASCII
+func isPrintableASCII(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+
+	printable := 0
+	for _, b := range data {
+		if (b >= 32 && b <= 126) || b == '\n' || b == '\r' || b == '\t' {
+			printable++
+		}
+	}
+
+	// At least 80% should be printable for it to be considered text
+	return float64(printable)/float64(len(data)) > 0.8
+}
+
+// saveValuesToFiles saves each value to a separate file
+func saveValuesToFiles(values [][]byte, outputDir, keyHex string) {
+	// Create output directory if needed
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		log.Fatalf("Failed to create output directory: %v", err)
+	}
+
+	// Save each value to a separate file
+	for i, value := range values {
+		fileName := filepath.Join(outputDir, fmt.Sprintf("%s.value%d.bin", keyHex, i+1))
+		if err := os.WriteFile(fileName, value, 0644); err != nil {
+			log.Printf("Failed to write value %d to file: %v", i+1, err)
+			continue
+		}
+
+		// If value looks like text, also save a text version
+		if isPrintableASCII(value) {
+			textFileName := filepath.Join(outputDir, fmt.Sprintf("%s.value%d.txt", keyHex, i+1))
+			if err := os.WriteFile(textFileName, value, 0644); err != nil {
+				log.Printf("Failed to write text value %d to file: %v", i+1, err)
+			}
+		}
+
+		fmt.Printf("Saved value %d to %s\n", i+1, fileName)
+	}
+}
