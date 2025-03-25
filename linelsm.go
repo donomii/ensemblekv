@@ -461,3 +461,26 @@ func (l *Linelsm) Size() int64 {
 	}
 	return total
 }
+
+func (l *Linelsm) KeyHistory(key []byte) ([][]byte, error) {
+	l.mutex.RLock()
+	defer l.mutex.RUnlock()
+	
+	allHistory := make([][]byte, 0)
+	
+	// Linelsm uses prefixed keys
+	dataKey := append([]byte(dataPrefix), key...)
+
+	// Check all tiers
+	for _, tier := range l.tiers {
+		for _, store := range tier {
+			// Try to get value for data key
+			value, err := store.Get(dataKey)
+			if err == nil {
+				allHistory = append(allHistory, value)
+			}
+		}
+	}
+	
+	return allHistory, nil
+}

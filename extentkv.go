@@ -320,6 +320,17 @@ func NewExtentKeyValueStore(directory string, blockSize int) (*ExtentKeyValStore
 	keysIndex, err := os.OpenFile(keysIndexFilePath, os.O_CREATE|os.O_RDWR, 0644)
 	panicOnError("Open keys index file", err)
 
+	// Keys index file length must be a multiple of 8
+	stat, _ := keysIndex.Stat()
+	if stat.Size()%8 != 0 {
+		panic("Keys index file length is not a multiple of 8")
+	}
+
+	// Keys index file must contain at least one entry
+	if stat.Size() < 8 {
+		panic("Keys index file is empty")
+	}
+
 	//Read the last index item to get the end of the file.  If this is different to the file size, then the file is corrupt and we should truncate it to size
 	_, err = keysIndex.Seek(-8, 2)
 	panicOnError("Seek to last entry in keys index file", err)
@@ -330,19 +341,19 @@ func NewExtentKeyValueStore(directory string, blockSize int) (*ExtentKeyValStore
 		keysFileEnd = -keysFileEnd
 	}
 
-	stat, _ := keysFile.Stat()
+	stat, _ = keysFile.Stat()
 	if keysFileEnd != stat.Size() {
 		// Get the difference between the expected size and the actual size
 		diff := keysFileEnd - stat.Size()
 		if diff < 0 {
-			diff = -diff
+			fmt.Printf("Index position is larger than actual keys file size: %d, cannot recover automatically\n", diff)
 		}
-		if diff > 8 {
-			fmt.Printf("Difference between recorded end of file and actual end of file is too large: %d, refusing to truncate, cannot recover from corrupted file\n", diff)
+		if diff > 1024 {
+			fmt.Printf("Difference between recorded end of keys file(in index) and actual end of file is too large: %d bytes.  Refusing to truncate, cannot recover from corrupted file\n", diff)
 			os.Exit(1)
 		}
-		fmt.Printf("Truncating keys index file %s to %d\n", keysIndexFilePath, keysFileEnd)
-		keysIndex.Truncate(keysFileEnd)
+		fmt.Printf("Keys file is larger than recorded in keys index.  Truncating keys index file %s to %d\n", keysFilePath, keysFileEnd)
+		keysFile.Truncate(keysFileEnd)
 	}
 
 	valuesIndex, err := os.OpenFile(valuesIndexFilePath, os.O_CREATE|os.O_RDWR, 0644)
@@ -350,6 +361,17 @@ func NewExtentKeyValueStore(directory string, blockSize int) (*ExtentKeyValStore
 
 	valuesFile, err := os.OpenFile(valuesFilePath, os.O_CREATE|os.O_RDWR, 0644)
 	panicOnError("Open values data file", err)
+
+	// Values index file length must be a multiple of 8
+	stat, _ = valuesIndex.Stat()
+	if stat.Size()%8 != 0 {
+		panic("Values index file length is not a multiple of 8")
+	}
+
+	// Values index file must contain at least one entry
+	if stat.Size() < 8 {
+		panic("Values index file is empty")
+	}
 
 	//Read the last index item to get the end of the file.  If this is different to the file size, then the file is corrupt and we should truncate it to size
 	_, err = valuesIndex.Seek(-8, 2)
@@ -365,14 +387,14 @@ func NewExtentKeyValueStore(directory string, blockSize int) (*ExtentKeyValStore
 		// Get the difference between the expected size and the actual size
 		diff := valuesFileEnd - stat.Size()
 		if diff < 0 {
-			diff = -diff
+			fmt.Printf("Index position is larger than actual values file size: %d, cannot recover automatically\n", diff)
 		}
 		if diff > 8 {
 			fmt.Printf("Difference between recorded end of file and actual end of file is too large: %d, refusing to truncate, cannot recover from corrupted file\n", diff)
 			os.Exit(1)
 		}
-		fmt.Printf("Truncating values index file %s to %d\n", valuesIndexFilePath, valuesFileEnd)
-		valuesIndex.Truncate(valuesFileEnd)
+		fmt.Printf("Values file is larger than recorded in values index.  Truncating values index file %s to %d\n", valuesFilePath, valuesFileEnd)
+		valuesFile.Truncate(valuesFileEnd)
 	}
 
 	s := &ExtentKeyValStore{
@@ -384,7 +406,7 @@ func NewExtentKeyValueStore(directory string, blockSize int) (*ExtentKeyValStore
 	}
 
 	if EnableIndexCaching {
-		s.cache = make(map[string]bool)
+		s.ClearCache()
 		s.loadKeyCache()
 	}
 
@@ -453,7 +475,7 @@ func (s *ExtentKeyValStore) loadKeyCache() error {
 	}
 
 	// Reinitialize the in‑memory cache.
-	s.cache = make(map[string]bool)
+	s.ClearCache()
 
 	keyIndexFileLength, err := s.keysIndex.Seek(0, 2)
 	panicOnError("Get key index file length", err)
@@ -552,6 +574,61 @@ func (s *ExtentKeyValStore) forwardScanForKey(key []byte) ([]byte, error) {
 	return value, nil
 }
 
+func (s *ExtentKeyValStore) KeyHistory(key []byte) ([][]byte, error) {
+	s.globalLock.Lock()
+	defer s.globalLock.Unlock()
+	
+	// For ExtentKeyValStore, we need to scan all entries in the keys and values files
+	history := make([][]byte, 0)
+	
+	// Reset file positions
+	s.keysFile.Seek(0, 0)
+	s.keysIndex.Seek(0, 0)
+	s.valuesFile.Seek(0, 0)
+	s.valuesIndex.Seek(0, 0)
+
+	// Get key index file length
+	keyIndexFileLength, _ := s.keysIndex.Seek(0, 2)
+	s.keysIndex.Seek(0, 0)
+
+	// Load index caches if enabled
+	if EnableIndexCaching {
+		s.loadKeysIndexCache()
+		s.loadValuesIndexCache()
+	}
+
+	// Scan through all entries
+	entry := int64(0)
+	for {
+		if entry*8+16 > int64(keyIndexFileLength) {
+			break
+		}
+		
+		// Read the key at this entry
+		keyData, deleted, err := readDataAtIndexPos(int64(entry*8), s.keysIndex, s.keysFile, s.keysIndexCache)
+		if err != nil {
+			entry++
+			continue
+		}
+		
+		// If this is the key we're looking for and not deleted
+		if bytes.Equal(keyData, key) && !deleted {
+			// Get the value
+			valueData, _, err := readDataAtIndexPos(int64(entry*8), s.valuesIndex, s.valuesFile, s.valuesIndexCache)
+			if err != nil {
+				entry++
+				continue
+			}
+			
+			history = append(history, valueData)
+		}
+		
+		entry++
+	}
+	
+	return history, nil
+}
+
 // Helper to read from index cache or file
 func (s *ExtentKeyValStore) readIndexAt(indexFile *os.File, cache []byte, offset int64, data interface{}) error {
 	if EnableIndexCaching && cache != nil {
@@ -570,6 +647,12 @@ func (s *ExtentKeyValStore) readIndexAt(indexFile *os.File, cache []byte, offset
 	return binary.Read(indexFile, binary.BigEndian, data)
 }
 
+func (s *ExtentKeyValStore) ClearCache() {
+	s.keysIndexCache = nil
+	s.valuesIndexCache = nil
+	s.cache = make(map[string]bool)
+}
+
 
 func (s *ExtentKeyValStore) Put(key, value []byte) error {
 	s.globalLock.Lock()
@@ -577,9 +660,7 @@ func (s *ExtentKeyValStore) Put(key, value []byte) error {
 
 	if EnableIndexCaching {
 		s.cacheWrites++ // count this flush
-		s.keysIndexCache = nil
-		s.valuesIndexCache = nil
-		s.cache = make(map[string]bool)
+		s.ClearCache()
 	}
 
 	// Move to end of data file for values.
@@ -700,24 +781,25 @@ func readDataAtIndexPos(indexPosition int64, indexFile *os.File, dataFile *os.Fi
 		panic(fmt.Errorf("readDataAtIndexPos: invalid index position, data file length is %d, and position is %d (this is the end of file marker, you read one too far)", indexFileLength, indexPosition))
 	}
 
-	if indexPosition+8 > indexFileLength {
-		panic(fmt.Sprintf("attempt to read past end of file: offset=%d, index file length len=%d", indexPosition, indexFileLength))
+	if indexPosition+16 > indexFileLength {
+		panic(fmt.Sprintf("attempt to read past end of file: offset=%d, index file length len=%d.  Last index is the seocnd last pointer(len-16), not the last pointer(len-8)", indexPosition, indexFileLength))
 		return nil, false, fmt.Errorf("readDataAtIndexPos: invalid index position %v greater than indexfile of length %v", indexPosition, indexFileLength)
 	}
 
 	// Read from cache or file
 	if EnableIndexCaching && cache != nil {
-
+		//Read the offset to the data
 		err = binary.Read(bytes.NewReader(cache[indexPosition:indexPosition+8]), binary.BigEndian, &dataPos)
 	} else {
 		_, err = indexFile.Seek(indexPosition, 0)
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to seek to index position: %w", err)
 		}
+		//Read the offset to the data
 		err = binary.Read(indexFile, binary.BigEndian, &dataPos)
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to read at index position: %v, length %v, file length %v, %v", indexPosition, 8, indexFileLength, err)
+		return nil, false, fmt.Errorf("failed to read data offset at index position: %v, length %v, file length %v, %v", indexPosition, 8, indexFileLength, err)
 	}
 
 	if dataPos < 0 {
@@ -728,15 +810,17 @@ func readDataAtIndexPos(indexPosition int64, indexFile *os.File, dataFile *os.Fi
 	// Read next index position
 	var nextDataPos int64
 	if EnableIndexCaching && cache != nil {
-		if indexPosition+8 >= int64(len(cache)) {
-			return nil, false, fmt.Errorf("invalid index position %v for indexfile of length %v", indexPosition, indexFileLength)
+		if indexPosition+16 > int64(len(cache)) {
+			return nil, false, fmt.Errorf("invalid index position %v for cache of length %v.  Probable attempted read on the last entry, but the last entry is always the closing entry", indexPosition, len(cache))
 		}
+		//Read the offset to the next data block (or EOF offset i.e. file length.  The last index entry always points to the end of the data file)
 		err = binary.Read(bytes.NewReader(cache[indexPosition+8:indexPosition+16]), binary.BigEndian, &nextDataPos)
 	} else {
 		_, err = indexFile.Seek(indexPosition+8, 0)
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to seek to data position: %w", err)
 		}
+		// Read the offset to the next data block (or EOF offset i.e. file length.  The last index entry always points to the end of the data file)
 		err = binary.Read(indexFile, binary.BigEndian, &nextDataPos)
 	}
 	if err != nil {
@@ -752,6 +836,14 @@ func readDataAtIndexPos(indexPosition int64, indexFile *os.File, dataFile *os.Fi
 	}
 
 	size := nextDataPos - dataPos
+	if size < 0 {
+		return nil, false, fmt.Errorf("invalid size %v for dataPos %v and nextDataPos %v", size, dataPos, nextDataPos)
+	}
+
+	//Don't read if the size is 0, we already know what the contents will be :D
+	if size == 0 {
+		return nil, deleted, nil
+	}
 
 	buffer := make([]byte, size)
 	_, err = dataFile.Seek(dataPos, 0)
@@ -814,6 +906,7 @@ func (s *ExtentKeyValStore) Delete(key []byte) error {
 	if EnableIndexCaching {
 		s.cacheWrites++ // count this flush
 	}
+	s.ClearCache()
 	//Seek to the end of the keys data file
 	keyPos, err := s.keysFile.Seek(0, 2)
 	if err != nil {
@@ -928,9 +1021,8 @@ func (s *ExtentKeyValStore) Delete(key []byte) error {
 	return nil
 }
 
-func (s *ExtentKeyValStore) Flush() error {
-	s.globalLock.Lock()
-	defer s.globalLock.Unlock()
+func (s *ExtentKeyValStore) doFlush() error {
+
 	err := s.keysFile.Sync()
 	if err != nil {
 		return err
@@ -944,9 +1036,18 @@ func (s *ExtentKeyValStore) Flush() error {
 		return err
 	}
 	err = s.valuesIndex.Sync()
+	s.keysIndexCache = nil
+	s.valuesIndexCache = nil
 
 	return nil
 }
+
+func (s *ExtentKeyValStore) Flush() error {
+	s.globalLock.Lock()
+	defer s.globalLock.Unlock()
+	return s.doFlush()
+}
+
 
 func (s *ExtentKeyValStore) DumpIndex() error {
 	s.globalLock.Lock()
@@ -958,6 +1059,7 @@ func (s *ExtentKeyValStore) DumpIndex() error {
 
 func (s *ExtentKeyValStore) DumpIndexLockFree() error {
 
+	s.doFlush()
 	fmt.Println("==========DUMPING INDEX==========")
 	keyIndexFileLength, err := s.keysIndex.Seek(0, 2)
 	panicOnError("Get key index file length", err)
@@ -968,7 +1070,7 @@ func (s *ExtentKeyValStore) DumpIndexLockFree() error {
 	panicOnError("Seek to start of values index file", err)
 	entry := int64(0)
 	for {
-		if entry*8+8 >= int64(keyIndexFileLength) {
+		if entry*8+16 > int64(keyIndexFileLength) {
 			break
 		}
 		var keyPos int64
@@ -978,7 +1080,7 @@ func (s *ExtentKeyValStore) DumpIndexLockFree() error {
 		if err != nil {
 			break
 		}
-		//fmt.Printf("KEY   Entry: %d, BytePosition: %d\n", entry, keyPos)
+		fmt.Printf("KEY   Entry: %d, BytePosition: %d, cache length: %d, keyIndexFileLength: %d\n", entry, keyPos, len(s.keysIndexCache), keyIndexFileLength)
 		key, deleted, err := readDataAtIndexPos(int64(entry*8), s.keysIndex, s.keysFile, s.keysIndexCache)
 		panicOnError("Read key data", err)
 		fmt.Printf("KEY   Entry: %d, BytePosition: %d, Deleted: %t, Key: %s\n", entry, keyPos, deleted, trimTo40(key))

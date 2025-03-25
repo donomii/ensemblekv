@@ -68,6 +68,20 @@ func (s *JsonKV) save() error {
 	return os.WriteFile(s.filename, data, 0644)
 }
 
+// KeyHistory returns all values for a key, even if they are deleted
+func (s *JsonKV) KeyHistory(key []byte) ([][]byte, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	
+	// JsonKV only maintains current values, no history
+	value, err := s.Get(key)
+	if err != nil {
+		return nil, err
+	}
+	
+	return [][]byte{value}, nil
+}
+
 // Get retrieves a value for a key
 func (s *JsonKV) Get(key []byte) ([]byte, error) {
 	s.mutex.RLock()

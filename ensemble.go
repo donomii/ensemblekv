@@ -27,6 +27,7 @@ type KvLike interface {
 	Close() error
 	MapFunc(f func([]byte, []byte) error) (map[string]bool, error)
 	DumpIndex() error
+	KeyHistory(key []byte) ([][]byte, error) // Returns array of all values
 }
 
 type DefaultOps struct {
@@ -34,6 +35,11 @@ type DefaultOps struct {
 
 func (d *DefaultOps) DumpIndex() error {
 	return nil
+}
+
+func (d *DefaultOps) KeyHistory(key []byte) ([][]byte, error) {
+
+	return [][]byte{}, nil
 }
 
 
@@ -122,6 +128,40 @@ func defaultHashFunc(data []byte) uint64 {
 // hashToIndex maps a hash value to an index of a substore.
 func (s *EnsembleKv) hashToIndex(hash uint64) int {
 	return int(hash) % len(s.substores)
+}
+
+func (s *EnsembleKv) KeyHistory(key []byte) ([][]byte, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	
+	// Combined history from all substores
+	allHistory := make([][]byte, 0)
+	
+	// Get the current hash and index for this key
+	hash := s.hashFunc(key)
+	index := s.hashToIndex(hash)
+	
+	// Check if the key might be in the current index
+	if index < len(s.substores) {
+		history, err := s.substores[index].KeyHistory(key)
+		if err == nil && len(history) > 0 {
+			allHistory = append(allHistory, history...)
+		}
+	}
+	
+	// Also check all other substores in case the key was previously in a different substore
+	for i, substore := range s.substores {
+		if i == index {
+			continue // Already checked this one
+		}
+		
+		history, err := substore.KeyHistory(key)
+		if err == nil && len(history) > 0 {
+			allHistory = append(allHistory, history...)
+		}
+	}
+	
+	return allHistory, nil
 }
 
 // Get retrieves a value for a given key from the appropriate substore.

@@ -78,6 +78,45 @@ func NewTreeLSM(
 	return store, nil
 }
 
+func (t *TreeLSM) KeyHistory(key []byte) ([][]byte, error) {
+	t.mutex.RLock()
+	defer t.mutex.RUnlock()
+	
+	allHistory := make([][]byte, 0)
+	
+	// Try to get current store history
+	history, err := t.currentStore.KeyHistory(key)
+	if err == nil && len(history) > 0 {
+		allHistory = append(allHistory, history...)
+	}
+	
+	// Also check substores
+	hashedKey := t.hashKey(key)
+	prefix := getPrefixForKey(hashedKey)
+	
+	// Check the substore that should contain this key
+	if subStore, exists := t.subStores[prefix]; exists {
+		history, err := subStore.KeyHistory(key)
+		if err == nil && len(history) > 0 {
+			allHistory = append(allHistory, history...)
+		}
+	}
+	
+	// Also check other substores - key might have moved
+	for subPrefix, subStore := range t.subStores {
+		if subPrefix == prefix {
+			continue // Already checked
+		}
+		
+		history, err := subStore.KeyHistory(key)
+		if err == nil && len(history) > 0 {
+			allHistory = append(allHistory, history...)
+		}
+	}
+	
+	return allHistory, nil
+}
+
 // Put stores a key-value pair
 func (t *TreeLSM) Put(key, value []byte) error {
 	t.mutex.Lock()

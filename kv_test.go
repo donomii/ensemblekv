@@ -338,7 +338,7 @@ var wrapperTypes = []struct {
     name string
     createWrapper func(baseCreator func(string, int) (KvLike, error)) func(string, int) (KvLike, error)
 }{
-    
+
     {
         "Ensemble",
         func(baseCreator func(string, int) (KvLike, error)) func(string, int) (KvLike, error) {

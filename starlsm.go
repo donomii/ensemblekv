@@ -75,6 +75,45 @@ func (s *StarLSM) getPrefixAtDepth(hashedKey string, depth int) string {
 	return hashedKey[:depth+1]
 }
 
+func (s *StarLSM) KeyHistory(key []byte) ([][]byte, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	
+	allHistory := make([][]byte, 0)
+	
+	// Try current store history
+	history, err := s.currentStore.KeyHistory(key)
+	if err == nil && len(history) > 0 {
+		allHistory = append(allHistory, history...)
+	}
+	
+	// Hash the key
+	hashedKey := s.hashKey(key)
+	prefix := s.getPrefixAtDepth(hashedKey, s.depth)
+	
+	// Check appropriate substore
+	if subStore, exists := s.subStores[prefix]; exists {
+		history, err := subStore.KeyHistory(key)
+		if err == nil && len(history) > 0 {
+			allHistory = append(allHistory, history...)
+		}
+	}
+	
+	// Also check other substores
+	for subPrefix, subStore := range s.subStores {
+		if subPrefix == prefix {
+			continue // Already checked
+		}
+		
+		history, err := subStore.KeyHistory(key)
+		if err == nil && len(history) > 0 {
+			allHistory = append(allHistory, history...)
+		}
+	}
+	
+	return allHistory, nil
+}
+
 // Put stores a key-value pair
 func (s *StarLSM) Put(key, value []byte) error {
 	s.mutex.Lock()

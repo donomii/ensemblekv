@@ -242,6 +242,16 @@ func NewBoltDbShim(directory string, blockSize int) (*BoltDbShim, error) {
 	return &s, nil
 }
 
+func (s *BoltDbShim) KeyHistory(key []byte) ([][]byte, error) {
+	// BoltDB doesn't store history, only the latest value
+	value, err := s.Get(key)
+	if err != nil {
+		return nil, err
+	}
+	
+	return [][]byte{value}, nil
+}
+
 
 func (s *BoltDbShim) Get(key []byte) ([]byte, error) {
 	var v []byte = nil
@@ -371,6 +381,16 @@ func NewPudgeShim(directory string, blockSize int) (*PudgeShim, error) {
 	s.db = db
 
 	return s, nil
+}
+
+func (s *PudgeShim) KeyHistory(key []byte) ([][]byte, error) {
+	// Pudge doesn't store history, only the latest value
+	value, err := s.Get(key)
+	if err != nil {
+		return nil, err
+	}
+	
+	return [][]byte{value}, nil
 }
 
 // Get implements KvLike interface
