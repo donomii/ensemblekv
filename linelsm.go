@@ -86,19 +86,21 @@ type Linelsm struct {
 	tiers        [][]KvLike
 	metadata     StoreMetadata
 	mutex        sync.RWMutex
-	maxKeys      int
-	blockSize    int // Block size for each underlying store
+	maxKeys      int64
+	blockSize    int64 // Block size for each underlying store
+	fileSize     int64 // File size for each underlying store
 	maxTierSizes []int64
-	createStore  func(path string, blockSize int) (KvLike, error)
+	createStore  CreatorFunc
 	// Removed background maintenance members.
 }
 
 // NewLinelsm initializes the LSM store with the given configuration.
 func NewLinelsm(
 	directory string,
-	blockSize int,
-	maxKeys int,
-	createStore func(path string, blockSize int) (KvLike, error),
+	blockSize int64,
+	maxKeys int64,
+	fileSize int64,
+	createStore CreatorFunc,
 ) (*Linelsm, error) {
 	store := &Linelsm{
 		directory:    directory,
@@ -112,6 +114,7 @@ func NewLinelsm(
 			4096 * 1024 * 1024, // Tier 3: 4GB
 		},
 		blockSize: blockSize,
+		fileSize: fileSize,
 	}
 
 	// Ensure the root directory exists
@@ -137,7 +140,7 @@ func (l *Linelsm) getOrCreateActiveStore(tier int) (KvLike, error) {
 
 	if len(l.tiers[tier]) == 0 {
 		storePath := filepath.Join(l.directory, fmt.Sprintf("tier-%d-store-%d", tier, time.Now().UnixNano()))
-		newStore, err := l.createStore(storePath, l.blockSize) // Use the stored blockSize
+		newStore, err := l.createStore(storePath, l.blockSize, l.fileSize)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create store: %w", err)
 		}

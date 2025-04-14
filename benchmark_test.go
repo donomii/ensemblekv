@@ -59,42 +59,45 @@ var (
 // StoreCreator is a function type that creates a KvLike store
 type StoreCreator struct {
 	Name     string
-	Creator  func(directory string, blockSize int) (KvLike, error)
+	Creator  CreatorFunc
 }
+
+var testFileSize int64 = 100000000 // 100MB
 
 // Define all our store creators
 var StoreCreators = []StoreCreator{
 	{"BoltDB", BoltDbCreator},
 	{"ExtentKV", ExtentCreator},
+	StoreCreator{"SingleFileKV", SingleFileKVCreator},
 	//{"Pudge", PudgeCreator},
 	{"JsonKV", JsonKVCreator},
-	{"EnsembleJsonKV", func(d string, b int) (KvLike, error) {
-		return EnsembleCreator(d, b, JsonKVCreator) 
+	{"EnsembleJsonKV", func(d string, b , c int64) (KvLike, error) {
+		return EnsembleCreator(d, b, testFileSize, JsonKVCreator)
 	}},
-	{"TreeLSMJsonKV", func(d string, b int) (KvLike, error) {
-		return NewTreeLSM(d, b, JsonKVCreator)
+	{"TreeLSMJsonKV", func(d string, b , c int64) (KvLike, error) {
+		return NewTreeLSM(d, b, testFileSize,JsonKVCreator)
 	}},
-	{"StarLSMJsonKV", func(d string, b int) (KvLike, error) {
-		return NewStarLSM(d, b, JsonKVCreator)
+	{"StarLSMJsonKV", func(d string, b , c int64) (KvLike, error) {
+		return NewStarLSM(d, b, testFileSize,JsonKVCreator)
 	}},
 
-	{"EnsembleBolt", func(d string, b int) (KvLike, error) { 
-		return EnsembleCreator(d, b, BoltDbCreator) 
+	{"EnsembleBolt", func(d string, b , c int64) (KvLike, error) {
+		return EnsembleCreator(d, b, testFileSize,BoltDbCreator)
 	}},
-	{"EnsembleExtent", func(d string, b int) (KvLike, error) { 
-		return EnsembleCreator(d, b, ExtentCreator)
+	{"EnsembleExtent", func(d string, b , c int64) (KvLike, error) {
+		return EnsembleCreator(d, b, testFileSize,ExtentCreator)
 	}},
-	{"TreeLSMBolt", func(d string, b int) (KvLike, error) { 
-		return NewTreeLSM(d, b, BoltDbCreator) 
+	{"TreeLSMBolt", func(d string, b , c int64) (KvLike, error) {
+		return NewTreeLSM(d, b,testFileSize,BoltDbCreator)
 	}},
-	{"TreeLSMExtent", func(d string, b int) (KvLike, error) { 
-		return NewTreeLSM(d, b, ExtentCreator) 
+	{"TreeLSMExtent", func(d string, b , c int64) (KvLike, error) {
+		return NewTreeLSM(d, b, testFileSize,ExtentCreator)
 	}},
-	{"StarLSMBolt", func(d string, b int) (KvLike, error) { 
-		return NewStarLSM(d, b, BoltDbCreator) 
+	{"StarLSMBolt", func(d string, b , c int64) (KvLike, error) {
+		return NewStarLSM(d, b, testFileSize,BoltDbCreator)
 	}},
-	{"StarLSMExtent", func(d string, b int) (KvLike, error) {
-		return NewStarLSM(d, b, ExtentCreator)
+	{"StarLSMExtent", func(d string, b , c int64) (KvLike, error) {
+		return NewStarLSM(d, b, testFileSize,ExtentCreator)
 	}},
 
 }
@@ -130,7 +133,7 @@ func runBenchmark(b *testing.B, creator StoreCreator, config *BenchConfig) *Benc
 	storePath := filepath.Join(dir, "store")
 	
 	// Initialize store
-	store, err := creator.Creator(storePath, 4096) // 4KB block size
+	store, err := creator.Creator(storePath, 4096, testFileSize) // 4KB block size
 	if err != nil {
 		b.Fatalf("Failed to create store %s: %v", creator.Name, err)
 	}
@@ -325,7 +328,7 @@ func BenchmarkHotspotAccess(b *testing.B) {
 	for _, creator := range StoreCreators {
 		b.Run(creator.Name, func(b *testing.B) {
 			dir := b.TempDir()
-			store, err := creator.Creator(filepath.Join(dir, "store"), 4096)
+			store, err := creator.Creator(filepath.Join(dir, "store"), 4096, testFileSize)
 			if err != nil {
 				b.Fatalf("Failed to create store: %v", err)
 			}

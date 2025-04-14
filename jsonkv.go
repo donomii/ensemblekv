@@ -17,7 +17,7 @@ type JsonKV struct {
 }
 
 // NewJsonKV creates a new JSON key-value store
-func JsonKVCreator(directory string, blockSize int) (KvLike, error) {
+func JsonKVCreator(directory string, blockSize , fileSize int64) (KvLike, error) {
 	store := &JsonKV{
 		filename: filepath.Join(directory, "store.json"),
 		data:     make(map[string][]byte),

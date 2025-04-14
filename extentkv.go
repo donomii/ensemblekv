@@ -197,7 +197,7 @@ type ExtentKeyValStore struct {
 	valuesFile  *os.File
 	keysIndex   *os.File
 	valuesIndex *os.File
-	blockSize   int
+	blockSize   int64
 	globalLock  sync.Mutex
 	cache       map[string]bool
 
@@ -288,7 +288,7 @@ func checkIndexSigns(keyIndex *os.File, valueIndex *os.File) {
 }
 
 
-func NewExtentKeyValueStore(directory string, blockSize int) (*ExtentKeyValStore, error) {
+func NewExtentKeyValueStore(directory string, blockSize, filesize int64) (*ExtentKeyValStore, error) {
 	//fmt.Println("Creating new ExtentKeyValueStore with enhanced caching at directory", directory)
 	os.MkdirAll(directory, 0755)
 	keysFilePath := directory + "/keys.dat"
@@ -1009,7 +1009,6 @@ func (s *ExtentKeyValStore) Delete(key []byte) error {
 	err = binary.Write(s.valuesIndex, binary.BigEndian, valueFileLength)     ;panicOnError("Write to values index file", err)
 
 	fmt.Println("Deleted key", trimTo40(key))
-	s.DumpIndexLockFree()
 
 	checkLastIndexEntry(s.keysIndex, s.keysFile)
 	checkLastIndexEntry(s.valuesIndex, s.valuesFile)
@@ -1143,12 +1142,6 @@ func (s *ExtentKeyValStore) LockFreeMapFunc(f func([]byte, []byte) error) (map[s
 		keyData, deleted, err := readDataAtIndexPos(keyIndexPosStart, s.keysIndex, s.keysFile, s.keysIndexCache)
 		if err != nil {
 			return nil, fmt.Errorf("LockFreeMapFunc: failed to read key data: %w", err)
-		}
-
-		// Have we seen this key before?
-		_, seen := validKeys[string(keyData)]
-		if seen {
-			continue
 		}
 
 		// check if this is a tombstone.  A position of -1 indicates a deleted key

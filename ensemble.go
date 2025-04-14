@@ -11,23 +11,21 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-
-
 )
 
 // This is ensemblekv, a key-value store that uses multiple sub-stores to store data. It is designed to be used with large data sets that do not fit into other kv stores, while still being able to use the features of those kv stores.
 
 type KvLike interface {
-	Get(key []byte) ([]byte, error)
-	Put(key []byte, val []byte) error
-	Exists(key []byte) bool
-	Delete(key []byte) error
-	Size() int64
-	Flush() error
-	Close() error
-	MapFunc(f func([]byte, []byte) error) (map[string]bool, error)
-	DumpIndex() error
-	KeyHistory(key []byte) ([][]byte, error) // Returns array of all values
+	Get(key []byte) ([]byte, error)		// Get retrieves a value for a given key.  If the key does not exist, it returns nil and an error.
+	Put(key []byte, val []byte) error	// Put stores a key-value pair.  If the key already exists, it overwrites the value.
+	Exists(key []byte) bool	// Exists checks if a key exists in the store.  Returns true if the key exists, false otherwise.
+	Delete(key []byte) error	// Delete removes a key-value pair from the store.  Behaviour might vary by store.
+	Size() int64	// Size returns the size, in bytes, used by the store.
+	Flush() error	// Flush ensures all data is written to disk.  Behaviour might vary by store.
+	Close() error	// Close closes the store and releases any resources.  The store becomes unusable after this call.
+	MapFunc(f func([]byte, []byte) error) (map[string]bool, error) // MapFunc applies a function to all key-value pairs in the store.  The function should return an error if it fails.  Some stores may call f multiple times for the same key, with each call being a different past value (usually caused by overwrites in an LSM store).  Returns a map of keys that were processed, where the value indicates if the key exists (true) or was deleted (false).
+	DumpIndex() error	// Prints the index to stdout, for debuggins
+	KeyHistory(key []byte) ([][]byte, error) // Returns array of all keys
 }
 
 type DefaultOps struct {
@@ -42,8 +40,6 @@ func (d *DefaultOps) KeyHistory(key []byte) ([][]byte, error) {
 	return [][]byte{}, nil
 }
 
-
-
 // HashFunc is the type of function used to hash keys for consistent hashing.
 type HashFunc func(data []byte) uint64
 
@@ -53,16 +49,17 @@ type EnsembleKv struct {
 	directory   string
 	substores   []KvLike
 	hashFunc    HashFunc
-	N           int
-	maxKeys     int
-	maxBlock    int
-	totalKeys   int // Total number of keys across all substores
+	N           int64
+	maxKeys     int64
+	maxBlock    int64
+	totalKeys   int64 // Total number of keys across all substores
 	mutex       sync.Mutex
-	generation  int
-	createStore func(path string, blockSize int) (KvLike, error)
+	generation  int64
+	createStore CreatorFunc
+	filesize    int64
 }
 
-func NewEnsembleKv(directory string, N int, maxBlock int, maxKeys int, createStore func(path string, blockSize int) (KvLike, error)) (*EnsembleKv, error) {
+func NewEnsembleKv(directory string, N, maxBlock, maxKeys, filesie int64, createStore CreatorFunc) (*EnsembleKv, error) {
 	store := &EnsembleKv{
 		directory:   directory,
 		N:           N,
@@ -70,6 +67,7 @@ func NewEnsembleKv(directory string, N int, maxBlock int, maxKeys int, createSto
 		maxKeys:     maxKeys,
 		createStore: createStore,
 		hashFunc:    defaultHashFunc,
+		filesize:   filesie,
 	}
 
 	if err := os.MkdirAll(directory, os.ModePerm); err != nil {
@@ -97,9 +95,9 @@ func (s *EnsembleKv) setup() error {
 		return err
 	}
 
-	for i := 0; i < s.N; i++ {
+	for i := int64(0); i < s.N; i++ {
 		subPath := filepath.Join(genPath, fmt.Sprintf("%d", i))
-		substore, err := s.createStore(subPath, s.maxBlock)
+		substore, err := s.createStore(subPath, s.maxBlock, s.filesize)
 		if err != nil {
 			return err
 		}
@@ -123,8 +121,6 @@ func defaultHashFunc(data []byte) uint64 {
 	return uint64(value)
 }
 
-
-
 // hashToIndex maps a hash value to an index of a substore.
 func (s *EnsembleKv) hashToIndex(hash uint64) int {
 	return int(hash) % len(s.substores)
@@ -133,14 +129,14 @@ func (s *EnsembleKv) hashToIndex(hash uint64) int {
 func (s *EnsembleKv) KeyHistory(key []byte) ([][]byte, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	
+
 	// Combined history from all substores
 	allHistory := make([][]byte, 0)
-	
+
 	// Get the current hash and index for this key
 	hash := s.hashFunc(key)
 	index := s.hashToIndex(hash)
-	
+
 	// Check if the key might be in the current index
 	if index < len(s.substores) {
 		history, err := s.substores[index].KeyHistory(key)
@@ -148,19 +144,19 @@ func (s *EnsembleKv) KeyHistory(key []byte) ([][]byte, error) {
 			allHistory = append(allHistory, history...)
 		}
 	}
-	
+
 	// Also check all other substores in case the key was previously in a different substore
 	for i, substore := range s.substores {
 		if i == index {
 			continue // Already checked this one
 		}
-		
+
 		history, err := substore.KeyHistory(key)
 		if err == nil && len(history) > 0 {
 			allHistory = append(allHistory, history...)
 		}
 	}
-	
+
 	return allHistory, nil
 }
 
@@ -277,10 +273,10 @@ func (s *EnsembleKv) rebalance() error {
 	//fmt.Printf("Creating new generation %d with %d substores\n", s.generation, s.N)
 	// Create new substores
 	newSubstores := make([]KvLike, s.N)
-	for i := 0; i < s.N; i++ {
+	for i := int64(0); i < s.N; i++ {
 		var err error
 		subPath := filepath.Join(newGenPath, fmt.Sprintf("%d", i))
-		newSubstores[i], err = s.createStore(subPath, s.maxBlock)
+		newSubstores[i], err = s.createStore(subPath, s.maxBlock, s.filesize)
 		if err != nil {
 			return err
 		}
@@ -292,7 +288,7 @@ func (s *EnsembleKv) rebalance() error {
 	for _, substore := range s.substores {
 		_, err := substore.MapFunc(func(key, value []byte) error {
 			hash := s.hashFunc(key)
-			newIndex := int(hash) % s.N
+			newIndex := int64(hash) % s.N
 			//fmt.Printf("Rebalancing key %v to substore %d\n", string(key), newIndex)
 			return newSubstores[newIndex].Put(key, value)
 		})
@@ -329,9 +325,9 @@ func (s *EnsembleKv) rebalance() error {
 
 // Metadata represents the persistent state of the Store.
 type Metadata struct {
-	Generation int `json:"generation"`
-	N          int `json:"n"`
-	TotalKeys  int `json:"totalKeys"`
+	Generation int64 `json:"generation"`
+	N          int64 `json:"n"`
+	TotalKeys  int64 `json:"totalKeys"`
 }
 
 // saveMetadata writes the current store metadata to a file.
@@ -399,12 +395,12 @@ func lockFreeMapFunc(substores []KvLike, f func(key []byte, value []byte) error)
 
 // Size returns the total number of keys in the store.
 func (s *EnsembleKv) Size() int64 {
-    s.mutex.Lock()
-    defer s.mutex.Unlock()
-    
-    var total int64
-    for _, substore := range s.substores {
-        total += substore.Size()
-    }
-    return total
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	var total int64
+	for _, substore := range s.substores {
+		total += substore.Size()
+	}
+	return total
 }

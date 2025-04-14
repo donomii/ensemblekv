@@ -12,63 +12,71 @@ import (
 	"github.com/recoilme/pudge"
 )
 
+type CreatorFunc func(directory string, blockSize, fileSize int64) (KvLike, error)
+
+
 // ExtentKeyValueStore is a key-value store that uses a single storage file and an index file to store data.  It can ingest a large amount of data at close to the maximum transfer speed of the drive, and still have reasonable performance.  Deletes do not recover disk space, compaction is required.
-func ExtentCreator(directory string, blockSize int) (KvLike, error) {
-	return NewExtentKeyValueStore(directory, blockSize)
+func ExtentCreator(directory string, blockSize , fileSize int64) (KvLike, error) {
+	return NewExtentKeyValueStore(directory, blockSize, fileSize)
+}
+
+func SingleFileKVCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
+	store:= NewSingleFileKVStore(directory+"/singlefilekv", blockSize, int64(fileSize))
+	return store, nil
 }
 
 
-func NuDbCreator(directory string, blockSize int) (KvLike, error) {
-	return NewNuDbShim(directory, blockSize)
+func NuDbCreator(directory string, blockSize , fileSize int64) (KvLike, error) {
+	return NewNuDbShim(directory, blockSize, fileSize)
 }
 
-func BoltDbCreator(directory string, blockSize int) (KvLike, error) {
-	return NewBoltDbShim(directory, blockSize)
+func BoltDbCreator(directory string, blockSize , fileSize int64) (KvLike, error) {
+	return NewBoltDbShim(directory, blockSize, fileSize)
 }
 
-func EnsembleCreator(directory string, blockSize int, creator func(directory string, blockSize int) (KvLike, error)) (KvLike, error) {
-	N := 3          //Number of sub-stores
-	maxKeys := 1000 //Max number of keys in each sub-store, before it is split
+func EnsembleCreator(directory string, blockSize, filesize int64, creator CreatorFunc ) (KvLike, error) {
+	N := int64(3)          //Number of sub-stores
+	maxKeys := int64(1000) //Max number of keys in each sub-store, before it is split
 
-	return NewEnsembleKv(directory, N, blockSize, maxKeys, creator)
+	return NewEnsembleKv(directory, N, blockSize, maxKeys, filesize, creator)
 }
 
-func LineLSMCreator(directory string, blockSize int, creator func(directory string, blockSize int) (KvLike, error)) (KvLike, error) {
-	return NewLinelsm(directory, blockSize, 1000, creator)
+func LineLSMCreator(directory string, blockSize int64, fileSize int64,creator CreatorFunc) (KvLike, error) {
+	return NewLinelsm(directory, blockSize, 1000, fileSize, creator)
 }
 
-func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize int, substores int) KvLike {
+func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize, substores , filesize int64) KvLike {
 	// Initialise.
 
 	switch tipe {
 	case "nudb":
-		h, err := NewNuDbShim(location, blockSize)
+		h, err := NewNuDbShim(location, blockSize, filesize)
 		if err != nil {
 			panic(err)
 		}
 		return h
 	case "extent":
-		h, err := NewExtentKeyValueStore(location, blockSize)
+		h, err := NewExtentKeyValueStore(location, blockSize, filesize)
 		if err != nil {
 			panic(err)
 		}
 
 		return h
 	case "bolt":
-		h, err := NewBoltDbShim(location, blockSize)
+		h, err := NewBoltDbShim(location, blockSize, filesize)
 		if err != nil {
 			panic(err)
 		}
 		return h
 	case "pudge":
-		h, err := NewPudgeShim(location, blockSize)
+		h, err := NewPudgeShim(location, blockSize, filesize)
 		if err != nil {
 			panic(err)
 		}
 		return h
 	
 	case "ensemble":
-		var creator func(directory string, blockSize int) (KvLike, error)
+		var creator CreatorFunc
 		switch subtipe {
 		case "pudge":
 			creator = PudgeCreator
@@ -82,8 +90,8 @@ func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize int, substo
 			panic("Unknown substore type: " + subtipe)
 		}
 
-		h, err := NewEnsembleKv(location, 60, 10*1024*1024, 100000, func(path string, blockSize int) (KvLike, error) {
-			kvstore, err := creator(path, blockSize)
+		h, err := NewEnsembleKv(location, 60, 10*1024*1024, 100000, filesize, func(path string, blockSize , filesize int64) (KvLike, error) {
+			kvstore, err := creator(path, blockSize, filesize)
 			if err != nil {
 				panic(err)
 			}
@@ -107,7 +115,7 @@ type nuDbShim struct {
 	dbHandle *nudb.Store
 }
 
-func NewNuDbShim(filename string, blockSize int) (*nuDbShim, error) {
+func NewNuDbShim(filename string, blockSize, fileSize int64) (*nuDbShim, error) {
 	s := nuDbShim{}
 	s.filename = filename
 	s.dataPath = filename + "/db.dat"
@@ -210,7 +218,7 @@ type BoltDbShim struct {
 	boltHandle *bolt.DB
 }
 
-func NewBoltDbShim(directory string, blockSize int) (*BoltDbShim, error) {
+func NewBoltDbShim(directory string, blockSize, filesize int64) (*BoltDbShim, error) {
 	s := BoltDbShim{}
 	s.directory = directory
 	
@@ -364,7 +372,7 @@ type PudgeShim struct {
 	db       *pudge.Db
 }
 
-func NewPudgeShim(directory string, blockSize int) (*PudgeShim, error) {
+func NewPudgeShim(directory string, blockSize , filesize int64) (*PudgeShim, error) {
 	s := &PudgeShim{
 		filename: filepath.Join(directory, "pudge.db"),
 	}
@@ -489,6 +497,6 @@ func (s *PudgeShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, erro
 }
 
 // PudgeCreator is the creator function for PudgeShim
-func PudgeCreator(directory string, blockSize int) (KvLike, error) {
-	return NewPudgeShim(directory, blockSize)
+func PudgeCreator(directory string, blockSize , filesize int64) (KvLike, error) {
+	return NewPudgeShim(directory, blockSize, filesize)
 }

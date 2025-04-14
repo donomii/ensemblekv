@@ -15,7 +15,7 @@ const (
 )
 
 // StartKVStoreOperations runs the test suite with proper timeout and directory setup
-func StartKVStoreOperations(t *testing.T, creator func(directory string, blockSize int) (KvLike, error), storeName string) {
+func StartKVStoreOperations(t *testing.T, creator CreatorFunc, storeName string) {
     t.Helper()
 
     // Set test timeout
@@ -29,10 +29,10 @@ func StartKVStoreOperations(t *testing.T, creator func(directory string, blockSi
             
 
             
-            blockSize := 1024 * 4 // 4KB blocks
+            blockSize := int64(1024 * 4) // 4KB blocks
             
             // Create store
-            store, err := creator(storePath, blockSize)
+            store, err := creator(storePath, blockSize, testFileSize) // 100MB max size
             if err != nil {
                 t.Fatalf("Failed to create store: %v", err)
             }
@@ -45,7 +45,7 @@ func StartKVStoreOperations(t *testing.T, creator func(directory string, blockSi
 
             // Run persistence tests
             t.Run("Persistence", func(t *testing.T) {
-                PersistenceTests(t, store, creator, storePath, blockSize)
+                PersistenceTests(t, store, creator, storePath, blockSize, int64(maxTestSize))
             })
             
             // Only close here if persistence tests didn't already close it
@@ -66,7 +66,7 @@ func StartKVStoreOperations(t *testing.T, creator func(directory string, blockSi
 }
 
 // PersistenceTests verifies that all operations survive store reopening and cache invalidation
-func PersistenceTests(t *testing.T, store KvLike, creator func(directory string, blockSize int) (KvLike, error), storePath string, blockSize int) {
+func PersistenceTests(t *testing.T, store KvLike, creator CreatorFunc, storePath string, blockSize, fileSize int64) {
     t.Helper()
     
     // Test data with a mix of sizes
@@ -94,7 +94,7 @@ func PersistenceTests(t *testing.T, store KvLike, creator func(directory string,
             t.Fatalf("Failed to close store: %v", err)
         }
         
-        store, err = creator(storePath, blockSize)
+        store, err = creator(storePath, blockSize, fileSize)
         if err != nil {
             t.Fatalf("Failed to reopen store: %v", err)
         }
@@ -137,7 +137,7 @@ func PersistenceTests(t *testing.T, store KvLike, creator func(directory string,
             t.Fatalf("Failed to close store: %v", err)
         }
 
-        store, err = creator(storePath, blockSize)
+        store, err = creator(storePath, blockSize, fileSize)
         if err != nil {
             t.Fatalf("Failed to reopen store: %v", err)
         }
@@ -161,14 +161,16 @@ func PersistenceTests(t *testing.T, store KvLike, creator func(directory string,
         if err != nil {
             t.Fatalf("Failed to update key: %v", err)
         }
-        
+
+        fmt.Println("Closing store after update")
         // Close and reopen
         err = store.Close()
         if err != nil {
             t.Fatalf("Failed to close store: %v", err)
         }
-        
-        store, err = creator(storePath, blockSize)
+
+        fmt.Println("Reopening store"+storePath+" after update")
+        store, err = creator(storePath, blockSize, fileSize)
         if err != nil {
             t.Fatalf("Failed to reopen store: %v", err)
         }
@@ -219,7 +221,7 @@ func PersistenceTests(t *testing.T, store KvLike, creator func(directory string,
             t.Fatalf("Failed to close store: %v", err)
         }
         
-        store, err = creator(storePath, blockSize)
+        store, err = creator(storePath, blockSize, fileSize)
         if err != nil {
             t.Fatalf("Failed to reopen store: %v", err)
         }
@@ -325,41 +327,42 @@ func MixedSizeKeyValuePairs(t *testing.T, store KvLike, storeName string) {
 // Base store types
 var baseStores = []struct {
     name    string
-    creator func(directory string, blockSize int) (KvLike, error)
+    creator CreatorFunc
 }{
     {"Bolt", BoltDbCreator},
     {"Extent", ExtentCreator},
    // {"Pudge", PudgeCreator},
 	{"JsonKV", JsonKVCreator},
+    {"SingleFile", SingleFileKVCreator},
 }
 
 // Store wrapper types
 var wrapperTypes = []struct {
     name string
-    createWrapper func(baseCreator func(string, int) (KvLike, error)) func(string, int) (KvLike, error)
+    createWrapper func(baseCreator CreatorFunc) CreatorFunc
 }{
 
     {
         "Ensemble",
-        func(baseCreator func(string, int) (KvLike, error)) func(string, int) (KvLike, error) {
-            return func(directory string, blockSize int) (KvLike, error) {
-                return EnsembleCreator(directory, blockSize, baseCreator)
+        func(baseCreator CreatorFunc) CreatorFunc {
+            return func(directory string, blockSize , filesize int64) (KvLike, error) {
+                return EnsembleCreator(directory, blockSize, testFileSize, baseCreator)
             }
         },
     },
     {
         "Tree",
-        func(baseCreator func(string, int) (KvLike, error)) func(string, int) (KvLike, error) {
-            return func(directory string, blockSize int) (KvLike, error) {
-                return NewTreeLSM(directory, blockSize, baseCreator)
+        func(baseCreator CreatorFunc) CreatorFunc {
+            return func(directory string, blockSize , filesize int64) (KvLike, error) {
+                return NewTreeLSM(directory, blockSize, testFileSize,baseCreator)
             }
         },
     },
     {
         "Star",
-        func(baseCreator func(string, int) (KvLike, error)) func(string, int) (KvLike, error) {
-            return func(directory string, blockSize int) (KvLike, error) {
-                return NewStarLSM(directory, blockSize, baseCreator)
+        func(baseCreator CreatorFunc) CreatorFunc {
+            return func(directory string, blockSize , filesize int64) (KvLike, error) {
+                return NewStarLSM(directory, blockSize, testFileSize,baseCreator)
             }
         },
     },

@@ -9,7 +9,6 @@ import (
 )
 
 const (
-	maxStoreSize = 64 * 1024 * 1024 // 64MB before splitting
 	prefixLen    = 1                 // Number of hex chars to use for prefixing (1 = 16 subdirs)
 )
 
@@ -22,8 +21,9 @@ type TreeLSM struct {
 	parent      *TreeLSM
 	prefix      string
 	isReadOnly  bool
-	createStore func(path string, blockSize int) (KvLike, error)
-	blockSize   int
+	createStore CreatorFunc
+	blockSize   int64
+	fileSize    int64
 	mutex       sync.RWMutex
 	hashFunc    HashFunc // Added hash function
 }
@@ -48,14 +48,16 @@ func getPrefixForKey(hashedKey string) string {
 // NewTreeLSM creates a new TreeLSM store
 func NewTreeLSM(
 	directory string,
-	blockSize int,
-	createStore func(path string, blockSize int) (KvLike, error),
+	blockSize int64,
+	fileSize int64,
+	createStore CreatorFunc,
 ) (*TreeLSM, error) {
 	store := &TreeLSM{
 		directory:   directory,
 		subStores:   make(map[string]*TreeLSM),
 		createStore: createStore,
 		blockSize:   blockSize,
+		fileSize:    fileSize,
 		hashFunc:    defaultHashFunc, // Use the same hash function as EnsembleKV
 	}
 
@@ -64,7 +66,7 @@ func NewTreeLSM(
 	}
 
 	// Create or open the current store
-	current, err := createStore(filepath.Join(directory, "current"), blockSize)
+	current, err := createStore(filepath.Join(directory, "current"), blockSize, fileSize) //FIXME filesize
 	if err != nil {
 		return nil, fmt.Errorf("failed to create store: %w", err)
 	}
@@ -121,6 +123,18 @@ func (t *TreeLSM) KeyHistory(key []byte) ([][]byte, error) {
 func (t *TreeLSM) Put(key, value []byte) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
+	return t.LockFreePut(key, value)
+}
+// LockFreePut stores a key-value pair without locking
+func (t *TreeLSM) LockFreePut(key, value []byte) error {
+
+	if len(value) > int(0.9*float64(t.fileSize)) {
+		return fmt.Errorf("value size exceeds storage limit")
+	}
+	if len(key) > int(0.9*float64(t.fileSize)) {
+		return fmt.Errorf("key size exceeds storage limit")
+	}
+
 
 	// Hash the key first
 	hashedKey := t.hashKey(key)
@@ -135,12 +149,12 @@ func (t *TreeLSM) Put(key, value []byte) error {
 	}
 
 	// Check if we need to split
-	if t.currentStore.Size() > maxStoreSize {
+	if t.currentStore.Size() + int64(len(value)) > int64(0.9*float64(t.fileSize)) {
 		if err := t.split(); err != nil {
 			return fmt.Errorf("failed to split store: %w", err)
 		}
 		// After splitting, we're read-only, so recursively put
-		return t.Put(key, value)
+		return t.LockFreePut(key, value)
 	}
 
 	return t.currentStore.Put(key, value)
@@ -184,7 +198,7 @@ func (t *TreeLSM) split() error {
 		prefix := fmt.Sprintf("%x", i)
 		subDir := filepath.Join(t.directory, prefix)
 		
-		subStore, err := NewTreeLSM(subDir, t.blockSize, t.createStore)
+		subStore, err := NewTreeLSM(subDir, t.blockSize, t.fileSize,t.createStore)
 		if err != nil {
 			return fmt.Errorf("failed to create substore %s: %w", prefix, err)
 		}
@@ -279,6 +293,7 @@ func (t *TreeLSM) loadSubStores() error {
 			subStore, err := NewTreeLSM(
 				filepath.Join(t.directory, entry.Name()),
 				t.blockSize,
+				t.fileSize,
 				t.createStore,
 			)
 			if err != nil {
