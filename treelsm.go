@@ -150,6 +150,7 @@ func (t *TreeLSM) LockFreePut(key, value []byte) error {
 
 	// Check if we need to split
 	if t.currentStore.Size() + int64(len(value)) > int64(0.9*float64(t.fileSize)) {
+		fmt.Printf("Splitting store %s because value size %v is greater than 90%% of file size %v\n", t.directory, t.currentStore.Size(), t.fileSize)
 		if err := t.split(); err != nil {
 			return fmt.Errorf("failed to split store: %w", err)
 		}
