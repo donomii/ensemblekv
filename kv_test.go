@@ -32,7 +32,7 @@ func StartKVStoreOperations(t *testing.T, creator CreatorFunc, storeName string)
             blockSize := int64(1024 * 4) // 4KB blocks
             
             // Create store
-            store, err := creator(storePath, blockSize, testFileSize) // 100MB max size
+            store, err := creator(storePath, blockSize, testFileCapacity)
             if err != nil {
                 t.Fatalf("Failed to create store: %v", err)
             }
@@ -182,7 +182,8 @@ func PersistenceTests(t *testing.T, store KvLike, creator CreatorFunc, storePath
         }
         
         if !bytes.Equal(value, newValue) {
-            t.Error("Update did not persist correctly")
+            msg := fmt.Sprintf("Value mismatch for updated key. Expected: %v, Got: %v", string(newValue), string(value))
+            t.Error(msg)
         }
     })
     
@@ -289,14 +290,14 @@ func MixedSizeKeyValuePairs(t *testing.T, store KvLike, storeName string) {
             value := randomBytes(size.valueSize, size.valueSize)
             
             // Test Put
-            fmt.Println("Putting key: ", trimTo40(key))
+            //fmt.Println("Putting key: ", trimTo40(key))
             err := store.Put(key, value)
             if err != nil {
                 t.Fatalf("Failed to put %dx%d pair: %v", size.keySize, size.valueSize, err)
             }
             
             // Test Get
-            fmt.Printf("Getting key: %v\n", trimTo40(key))
+            //fmt.Printf("Getting key: %v\n", trimTo40(key))
             retrieved, err := store.Get(key)
             if err != nil {
                 t.Fatalf("Failed to get %dx%d pair(%v): %v", size.keySize, size.valueSize, trimTo40(key),err)
@@ -307,7 +308,7 @@ func MixedSizeKeyValuePairs(t *testing.T, store KvLike, storeName string) {
             }
 
             // Test Delete
-            fmt.Printf("Deleting key: %v\n", trimTo40(key))
+            //fmt.Printf("Deleting key: %v\n", trimTo40(key))
             err = store.Delete(key)
             if err != nil {
                 t.Fatalf("Failed to delete %dx%d pair: %v", size.keySize, size.valueSize, err)
@@ -346,7 +347,7 @@ var wrapperTypes = []struct {
         "Ensemble",
         func(baseCreator CreatorFunc) CreatorFunc {
             return func(directory string, blockSize , filesize int64) (KvLike, error) {
-                return EnsembleCreator(directory, blockSize, testFileSize, baseCreator)
+                return EnsembleCreator(directory, blockSize, testFileCapacity, baseCreator)
             }
         },
     },
@@ -354,7 +355,7 @@ var wrapperTypes = []struct {
         "Tree",
         func(baseCreator CreatorFunc) CreatorFunc {
             return func(directory string, blockSize , filesize int64) (KvLike, error) {
-                return NewTreeLSM(directory, blockSize, testFileSize,baseCreator)
+                return NewTreeLSM(directory, blockSize, testFileCapacity,0,baseCreator)
             }
         },
     },
@@ -362,7 +363,7 @@ var wrapperTypes = []struct {
         "Star",
         func(baseCreator CreatorFunc) CreatorFunc {
             return func(directory string, blockSize , filesize int64) (KvLike, error) {
-                return NewStarLSM(directory, blockSize, testFileSize,baseCreator)
+                return NewStarLSM(directory, blockSize, testFileCapacity,baseCreator)
             }
         },
     },

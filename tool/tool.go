@@ -75,7 +75,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to set value: %v", err)
 		}
-		fmt.Printf("Successfully set value for key %s (%d bytes)\n", 
+		fmt.Printf("Successfully set value for key %s (%d bytes)\n",
 			hex.EncodeToString(key_b), len(valueData))
 		return
 	}

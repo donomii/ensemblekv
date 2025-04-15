@@ -227,7 +227,7 @@ func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
         key := []byte("test_key")
         value := []byte("test_value")
 
-        fmt.Printf("Putting key %v\n", trimTo40(key))
+        //fmt.Printf("Putting key %v\n", trimTo40(key))
         err := store.Put(key, value)
         if err != nil {
             store.DumpIndex()
@@ -255,7 +255,7 @@ func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
         key := randomBytes(minKeySize, keySize)
         value := randomBytes(minValueSize, valueSize)
 
-        fmt.Printf("Putting key %v\n", trimTo40(key))
+        //fmt.Printf("Putting key %v\n", trimTo40(key))
         err := store.Put(key, value)
         if err != nil {
             t.Fatalf("Failed to put large key/value pair: %v", err)

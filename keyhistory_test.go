@@ -15,7 +15,7 @@ func TestExtentKeyHistory(t *testing.T) {
 	storePath := filepath.Join(dir, "extent_test")
 	
 	// Create an ExtentKeyValueStore
-	store, err := ExtentCreator(storePath, 4096, testFileSize)  //FIXME filesize
+	store, err := ExtentCreator(storePath, 4096, testFileCapacity)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestEnsembleKeyHistory(t *testing.T) {
 	storePath := filepath.Join(dir, "ensemble_test")
 	
 	// Create an EnsembleKv store
-	store, err := EnsembleCreator(storePath, 4096, testFileSize, ExtentCreator)
+	store, err := EnsembleCreator(storePath, 4096, testFileCapacity, ExtentCreator)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -175,19 +175,19 @@ func TestMultipleStoreTypes(t *testing.T) {
 		{
 			name: "ExtentKV",
 			creator: func(dir string) (KvLike, error) {
-				return ExtentCreator(dir, 4096, testFileSize) //FIXME filesize
+				return ExtentCreator(dir, 4096, testFileCapacity) //FIXME filesize
 			},
 		},
 		{
 			name: "JsonKV",
 			creator: func(dir string) (KvLike, error) {
-				return JsonKVCreator(dir, 4096, testFileSize) //FIXME filesize
+				return JsonKVCreator(dir, 4096, testFileCapacity) //FIXME filesize
 			},
 		},
 		{
 			name: "BoltDB",
 			creator: func(dir string) (KvLike, error) {
-				return BoltDbCreator(dir, 4096, testFileSize) //FIXME filesize
+				return BoltDbCreator(dir, 4096, testFileCapacity) //FIXME filesize
 			},
 		},
 		{
@@ -199,13 +199,13 @@ func TestMultipleStoreTypes(t *testing.T) {
 		{
 			name: "TreeLSM",
 			creator: func(dir string) (KvLike, error) {
-				return NewTreeLSM(dir, 4096, testFileSize,ExtentCreator)
+				return NewTreeLSM(dir, 4096, testFileCapacity,0,ExtentCreator)
 			},
 		},
 		{
 			name: "StarLSM",
 			creator: func(dir string) (KvLike, error) {
-				return NewStarLSM(dir, 4096, testFileSize,ExtentCreator)
+				return NewStarLSM(dir, 4096, testFileCapacity,ExtentCreator)
 			},
 		},
 	}
@@ -288,7 +288,7 @@ func TestRecoverFromCorruption(t *testing.T) {
 	storePath := filepath.Join(dir, "corruption_test")
 	
 	// Create the store
-	store, err := ExtentCreator(storePath, 4096, testFileSize) //FIXME filesize
+	store, err := ExtentCreator(storePath, 4096, testFileCapacity) //FIXME filesize
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestRecoverFromCorruption(t *testing.T) {
 	t.Logf("Truncated index file from %d to %d bytes", info.Size(), truncateSize)
 	
 	// Try to reopen the store - this may fail due to corruption
-	store, err = ExtentCreator(storePath, 4096, testFileSize) //FIXME filesize
+	store, err = ExtentCreator(storePath, 4096, testFileCapacity) //FIXME filesize
 	if err != nil {
 		t.Logf("Note: Store reopened with error (expected with corruption): %v", err)
 		// We'll still try to get history if possible
@@ -378,7 +378,7 @@ func TestLargeHistory(t *testing.T) {
 	storePath := filepath.Join(dir, "large_history_test")
 	
 	// Create an ExtentKeyValueStore
-	store, err := ExtentCreator(storePath, 4096, testFileSize) //FIXME filesize
+	store, err := ExtentCreator(storePath, 4096, testFileCapacity) //FIXME filesize
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
