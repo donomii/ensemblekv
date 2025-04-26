@@ -6,5 +6,5 @@ megapool_test:
 	./test
 megapool.exe:
 	gcc -m64 -O1 -Wl,--stack,16777216  main.c -DII_WINDOWS -Wall -Wno-format -Wno-unused-function -Wno-parentheses
-megapool:
+megapool: *.c *.h
 	gcc -o megapool -m64 -O1   main.c  -Wall -Wno-format -Wno-unused-function -Wno-parentheses -Wno-incompatible-pointer-types-discards-qualifiers
