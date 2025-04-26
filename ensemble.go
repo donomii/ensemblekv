@@ -162,8 +162,7 @@ func (s *EnsembleKv) KeyHistory(key []byte) ([][]byte, error) {
 
 // Get retrieves a value for a given key from the appropriate substore.
 func (s *EnsembleKv) Get(key []byte) ([]byte, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+
 
 	hash := s.hashFunc(key)
 	index := s.hashToIndex(hash)
@@ -182,8 +181,7 @@ func clampString(in string, length int) string {
 
 // Adjusted Put method to track the total number of keys and trigger rebalance if needed.
 func (s *EnsembleKv) Put(key []byte, val []byte) error {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	
 
 	hash := s.hashFunc(key)
 	index := s.hashToIndex(hash)
