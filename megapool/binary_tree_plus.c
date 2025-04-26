@@ -1,3 +1,25 @@
+#include <stddef.h>
+
+#include "binary_tree_plus.h"
+
+#define BTREE_ASSERT(condition, message) \
+    do { \
+        if (!(condition)) { \
+            fprintf(stderr, "Assertion failed: %s\n", message); \
+            abort(); \
+        } \
+    } while (0)
+
+// Helper functions for offset<->pointer conversions
+static inline btree *btree_from_offset(mega_pool *p, ii_int offset) {
+    if (offset == 0) return NULL;
+    return (btree *)((char *)p->recommended_address + offset);
+}
+
+static inline ii_int btree_to_offset(mega_pool *p, btree *ptr) {
+    if (ptr == NULL) return 0;
+    return (ii_int)((char *)ptr - (char *)p->recommended_address);
+}
 #include "binary_tree_plus.h"
 
 #define BTREE_ASSERT(condition, message) \
@@ -32,79 +54,73 @@
         return res;
     }
 
-btree *btree_insert(mega_pool *p, btree *tree, void *key, btree_int key_length, void *data, btree_int data_length)
+ii_int btree_insert(mega_pool *p, ii_int tree_offset, void *key, ii_int key_length, void *data, ii_int data_length)
 {
-    // Validate input parameters
-    if (!key || key_length <= 0) {
-        fprintf(stderr, "btree_insert: Invalid key parameters\n");
-        return tree;  // Return original tree unchanged
-    }
-    
+    btree *tree = btree_from_offset(p, tree_offset);
     btree *temp = NULL;
     if (!tree) {
-        // Validate memory allocation
         temp = (btree *)mega_malloc(p, sizeof(btree));
         if (!temp) {
             fprintf(stderr, "btree_insert: Memory allocation failed\n");
-            return NULL;
+            return 0;
         }
-        
         temp->bumper = 0;
-        temp->left = NULL;
-        temp->right = NULL;
+        temp->left = 0;
+        temp->right = 0;
         temp->key = key;
         temp->key_length = key_length;
         temp->data = data;
         temp->data_length = data_length;
         temp->bumperl = 0;
-        return temp;
+        printf("pool %p, size %d, start free %p\n", p, p->size, p->start_free);
+        printf("Allocated new node at %p\n", temp);
+        return btree_to_offset(p, temp);
     }
-    
-    // Check for data corruption
+
+    if (!key || key_length <= 0) {
+        fprintf(stderr, "btree_insert: Invalid key parameters\n");
+        return tree_offset;
+    }
     if ((tree->bumper != 0) || (tree->bumperl != 0)) {
         fprintf(stderr, "btree_insert: Data corruption detected!\n");
-        return tree;  // Return original tree rather than aborting
+        return tree_offset;
     }
-
     int comp = btree_memcmp(key, tree->key, key_length, tree->key_length);
-
     if (comp < 0) {
-        tree->left = btree_insert(p, tree->left, key, key_length, data, data_length);
+        ii_int left_offset = btree_insert(p, tree->left, key, key_length, data, data_length);
+        tree->left = left_offset;
     }
     else if (comp > 0) {
-        tree->right = btree_insert(p, tree->right, key, key_length, data, data_length);
+        ii_int right_offset = btree_insert(p, tree->right, key, key_length, data, data_length);
+        tree->right = right_offset;
     }
     // If comp == 0, we found a match but don't update it (that's what btree_set is for)
-
-    return tree;
+    return btree_to_offset(p, tree);
 }
 
-int btree_depth(btree *tree, int depth)
+int btree_depth(mega_pool *p, ii_int tree_offset, int depth)
 {
-
-    if (tree)
-    {
+    btree *tree = btree_from_offset(p, tree_offset);
+    if (tree) {
         if ((tree->bumper != 0) || (tree->bumperl != 0)){
             printf("tree> Data corruption!\n");
             abort();
         }
-        int l = btree_depth(tree->left, depth + 1);
-        int r = btree_depth(tree->right, depth + 1);
+        int l = btree_depth(p, tree->left, depth + 1);
+        int r = btree_depth(p, tree->right, depth + 1);
         return (l > r) ? l : r;
-    }
-    else
-    {
+    } else {
         return depth;
     }
 }
 
 
-//Count the number of nodes in the tree
-int btree_count(btree *tree)
+// Count the number of nodes in the tree
+int btree_count(mega_pool *p, ii_int tree_offset)
 {
-    if (tree)
-    {
-        return 1 + btree_count(tree->left) + btree_count(tree->right);
+    btree *tree = btree_from_offset(p, tree_offset);
+    if (tree) {
+        return 1 + btree_count(p, tree->left) + btree_count(p, tree->right);
     }
     return 0;
 }
@@ -126,386 +142,356 @@ typedef struct {
 } allpair;
 
 
-allpair btree_balance_rec(btree *tree)
+allpair btree_balance_rec(mega_pool *p, ii_int tree_offset)
 {
-    
+    btree *tree = btree_from_offset(p, tree_offset);
     allpair ret;
-    ret.car.ui=0;
-    ret.cdr.v=NULL;
-    
-    // Enable the checking code that was commented out
-
-    #ifdef DOUBLECHECK
-    int startcount = btree_count(tree);
-    #endif
-    
+    ret.car.ui = 0;
+    ret.cdr.v = NULL;
+#ifdef DOUBLECHECK
+    int startcount = btree_count(p, tree_offset);
+#endif
     if (!tree)
         return ret;
-
-    //printf("Balancing %p rec\n", tree);
-
-    if ((tree->bumper != 0) || (tree->bumperl != 0))
-    {
+    if ((tree->bumper != 0) || (tree->bumperl != 0)) {
         printf("tree> Data corruption!\n");
         exit(1);
         abort();
     }
-
-    allpair p = btree_balance_rec(tree->left);
-  
-    uint64_t l_depth = p.car.ui;
-    tree->left = p.cdr.v;
-    p = btree_balance_rec(tree->right);
-  
-    tree->right = p.cdr.v;
-    uint64_t r_depth =  p.car.ui;
-
+    allpair p_left = btree_balance_rec(p, tree->left);
+    uint64_t l_depth = p_left.car.ui;
+    tree->left = (p_left.cdr.v ? btree_to_offset(p, (btree *)p_left.cdr.v) : 0);
+    allpair p_right = btree_balance_rec(p, tree->right);
+    tree->right = (p_right.cdr.v ? btree_to_offset(p, (btree *)p_right.cdr.v) : 0);
+    uint64_t r_depth = p_right.car.ui;
     // Keep all ASCII diagrams and comments in rotation code
-    if ((r_depth - l_depth > 2) && (tree->right != NULL) && (tree->right->left != NULL))
-    {
-        //Rotate left
-        btree *p = tree;
-        check_in_pool(hidden_pool, p->right);
-        btree *q = p->right;
+    btree *new_right = btree_from_offset(p, tree->right);
+    if ((r_depth - l_depth > 2) && (new_right != NULL) && (btree_from_offset(p, new_right->left) != NULL)) {
+        // Rotate left
+        btree *pnode = tree;
+        check_in_pool(p, btree_from_offset(p, pnode->right), "balance_rec: right");
+        btree *q = btree_from_offset(p, pnode->right);
         /*     p
              X   q 
                Y   Z */
-        check_in_pool(hidden_pool, q->left);
-        p->right = q->left;
+        check_in_pool(p, btree_from_offset(p, q->left), "balance_rec: left");
+        pnode->right = q->left;
         /*     
               p    q 
             X   Y   Z */
-        q->left = p;
+        q->left = btree_to_offset(p, pnode);
         /*      q
               p   Z   
             X   Y    */
         tree = q;
     }
-
-    if ((l_depth - r_depth > 2) && (tree->left != NULL) && (tree->left->right != NULL))
-    {
+    btree *new_left = btree_from_offset(p, tree->left);
+    if ((l_depth - r_depth > 2) && (new_left != NULL) && (btree_from_offset(p, new_left->right) != NULL)) {
         btree *q = tree;
-        check_in_pool(hidden_pool, q->left);
-        btree *p = q->left;
+        check_in_pool(p, btree_from_offset(p, q->left), "balance_rec: left");
+        btree *pnode = btree_from_offset(p, q->left);
         /*      q
               p   Z   
             X   Y    */
-        check_in_pool(hidden_pool, p->right);
-        q->left = p->right;
+        check_in_pool(p, btree_from_offset(p, pnode->right), "balance_rec: right");
+        q->left = pnode->right;
         /*      
               p   q   
             X   Y   Z */
-        p->right = q;
+        pnode->right = btree_to_offset(p, q);
         /*      p
               X   q   
                 Y   Z */
-        tree = p;
+        tree = pnode;
     }
-  
-    #ifdef DOUBLECHECK
-    int endcount = btree_count(tree);
+#ifdef DOUBLECHECK
+    int endcount = btree_count(p, btree_to_offset(p, tree));
     if (startcount != endcount) {
         printf("Balancing dropped some nodes!\n");
         abort();
     }
-    #endif
-    
-    ret.car.ui = (l_depth + r_depth +1);
+#endif
+    ret.car.ui = (l_depth + r_depth + 1);
     ret.cdr.v = tree;
-    //printf("Balancing %p rec complete\n", tree);
     return ret;
 }
 
 
-btree *btree_balance(btree *tree)
+ii_int btree_balance(mega_pool *p, ii_int tree_offset)
 {
+    btree *tree = btree_from_offset(p, tree_offset);
     d("Balancing %p\n", tree);
-
-    // Add validation before balancing
-    #ifdef DOUBLECHECK
-    if (!btree_validate(tree)) {
+#ifdef DOUBLECHECK
+    if (!btree_validate(p, tree)) {
         printf("Tree validation failed before balancing\n");
         abort();
     }
-    #endif
-    
-    allpair p = btree_balance_rec(tree);
-    
-    // Add validation after balancing
-    #ifdef DOUBLECHECK
-    btree* result = (btree*) p.cdr.v;
-    if (!btree_validate(result)) {
+#endif
+    allpair pr = btree_balance_rec(p, tree_offset);
+#ifdef DOUBLECHECK
+    btree* result = (btree*)pr.cdr.v;
+    if (!btree_validate(p, result)) {
         printf("Tree validation failed after balancing\n");
         abort();
     }
-    #endif
-
-    return (btree*) p.cdr.v;
+#endif
+    return btree_to_offset(p, (btree*)pr.cdr.v);
 }
 
-btree *btree_set(mega_pool *p, btree *tree, void const*key, btree_int key_length, void *data, btree_int data_length)
+ii_int btree_set(mega_pool *p, ii_int tree_offset, void const *key, ii_int key_length, void *data, ii_int data_length)
 {
-    check_in_pool(p, key);
-    check_in_pool(p, data);
+    btree *tree = btree_from_offset(p, tree_offset);
+    check_in_pool(p, key, "set: key");
+    check_in_pool(p, data, "set: data");
     btree *temp = NULL;
-    if (!tree)
-    {
+    if (!tree) {
         temp = (btree *)mega_malloc(p, sizeof(btree));
         temp->bumper = 0;
-        temp->left = NULL;
-        temp->right = NULL;
+        temp->left = 0;
+        temp->right = 0;
         temp->key = key;
         temp->key_length = key_length;
-        temp->data=data;
-        temp->data_length=data_length;
+        temp->data = data;
+        temp->data_length = data_length;
         temp->bumperl = 0;
-        return temp;
+        return btree_to_offset(p, temp);
     }
-
-    if ((tree->bumper != 0) || (tree->bumperl != 0))
-    {
+    if ((tree->bumper != 0) || (tree->bumperl != 0)) {
         printf("tree> Data corruption!\n");
         abort();
     }
-
     int comp = btree_memcmp(key, tree->key, key_length, tree->key_length);
-
-    if (comp < 0)
-    {
-        tree->left = btree_set(p, tree->left, key, key_length, data, data_length);
+    if (comp < 0) {
+        ii_int left_offset = btree_set(p, tree->left, key, key_length, data, data_length);
+        tree->left = left_offset;
     }
-
-    else if (comp > 0)
-    {
-        tree->right = btree_set(p, tree->right, key, key_length, data, data_length);
+    else if (comp > 0) {
+        ii_int right_offset = btree_set(p, tree->right, key, key_length, data, data_length);
+        tree->right = right_offset;
     }
-
-    else if (comp == 0)
-    {
-        //printf("tree set> Key %s exists, replacing value with %p\n", tree->data->key, val);
+    else if (comp == 0) {
         tree->data = data;
-        tree->data_length=data_length;
+        tree->data_length = data_length;
     }
-
-    return tree;
+    return btree_to_offset(p, tree);
 }
 
-void btree_print_preorder(btree *tree)
+void btree_print_preorder(mega_pool *p, ii_int tree_offset)
 {
-    if (tree)
-    {
-        printf("%s\n", tree->key);
-        btree_print_preorder(tree->left);
-        btree_print_preorder(tree->right);
+    btree *tree = btree_from_offset(p, tree_offset);
+    if (tree) {
+        printf("%s\n", (char*)tree->key);
+        btree_print_preorder(p, tree->left);
+        btree_print_preorder(p, tree->right);
     }
 }
-void btree_print_inorder(btree *tree)
+void btree_print_inorder(mega_pool *p, ii_int tree_offset)
 {
-    if (tree)
-    {
-        btree_print_inorder(tree->left);
-        printf("%s\n", tree->key);
-        btree_print_inorder(tree->right);
+    btree *tree = btree_from_offset(p, tree_offset);
+    if (tree) {
+        btree_print_inorder(p, tree->left);
+        printf("%s\n", (char*)tree->key);
+        btree_print_inorder(p, tree->right);
     }
 }
-
-void btree_dump_string_hash(btree *tree)
+void btree_dump_string_hash(mega_pool *p, ii_int tree_offset)
 {
-    if ((void *)tree > (void *)10)
-    {
-        //if (tree->data->key ==NULL) {return;}
-        btree_dump_string_hash(tree->left);
-        printf("\n\n****%s:\n", tree->key);
+    btree *tree = btree_from_offset(p, tree_offset);
+    if ((void *)tree > (void *)10) {
+        btree_dump_string_hash(p, tree->left);
+        printf("\n\n****%s:\n", (char*)tree->key);
         ll_dump_string_list(tree->data);
-        btree_dump_string_hash(tree->right);
+        btree_dump_string_hash(p, tree->right);
+    }
+}
+void btree_print_postorder(mega_pool *p, ii_int tree_offset)
+{
+    btree *tree = btree_from_offset(p, tree_offset);
+    if (tree) {
+        btree_print_postorder(p, tree->left);
+        btree_print_postorder(p, tree->right);
+        printf("%s\n", (char*)tree->key);
     }
 }
 
-void btree_print_postorder(btree *tree)
+// Helper function to delete a node from btree (by offset)
+ii_int btree_delete_node(mega_pool *p, ii_int root_offset, ii_int node_to_delete_offset)
 {
-    if (tree)
-    {
-        btree_print_postorder(tree->left);
-        btree_print_postorder(tree->right);
-        printf("%s\n", tree->key);
+    btree *root = btree_from_offset(p, root_offset);
+    btree *node_to_delete = btree_from_offset(p, node_to_delete_offset);
+    if (!root) return 0;
+    btree *left = btree_from_offset(p, root->left);
+    btree *right = btree_from_offset(p, root->right);
+    btree *temp = root;
+    if (root == node_to_delete) {
+        // Case 1: No children
+        if (!left && !right) {
+            return 0;
+        }
+        // Case 2: One child
+        else if (!left) {
+            temp = right;
+            return btree_to_offset(p, temp);
+        }
+        else if (!right) {
+            temp = left;
+            return btree_to_offset(p, temp);
+        }
+        // Case 3: Two children
+        else {
+            // Find inorder successor (smallest node in right subtree)
+            btree *successor = right;
+            while (successor && btree_from_offset(p, successor->left)) {
+                successor = btree_from_offset(p, successor->left);
+            }
+            // Copy successor's data to this node
+            root->key = successor->key;
+            root->key_length = successor->key_length;
+            root->data = successor->data;
+            root->data_length = successor->data_length;
+            // Delete the successor
+            ii_int right_offset = btree_delete_node(p, root->right, btree_to_offset(p, successor));
+            root->right = right_offset;
+        }
     }
-}
-
-void btree_deltree(btree *tree)
-{
-    if (tree)
-    {
-        btree_deltree(tree->left);
-        btree_deltree(tree->right);
-        //free(tree);  FIXME add mega_free
+    else if (btree_memcmp(node_to_delete->key, root->key,
+                          node_to_delete->key_length, root->key_length) < 0) {
+        ii_int left_offset = btree_delete_node(p, root->left, node_to_delete_offset);
+        root->left = left_offset;
     }
-}
-
-/*
-int min(int a, int b) {
-    return (a<b) ? a : b;
-}
-*/
-
-int btree_iterate(btree *tree, int (*callback)(const void*, int, void*, int, void*), void* userdata)
-{
-    if (tree)
-    {
-        int quit = btree_iterate(tree->left, callback, userdata);
-        if (quit) return 1;
-        quit = callback(tree->key, tree->key_length, tree->data, tree->data_length, userdata);
-        if (quit) return 1;
-        quit = btree_iterate(tree->right, callback, userdata);
-        return 0;
+    else {
+        ii_int right_offset = btree_delete_node(p, root->right, node_to_delete_offset);
+        root->right = right_offset;
     }
-    return 1;
+    return btree_to_offset(p, root);
 }
-
-
-
-btree *btree_search(btree *tree, const void *key, btree_int key_length)
+ii_int btree_search(mega_pool *p, ii_int tree_offset, const void *key, ii_int key_length)
 {
+    btree *tree = btree_from_offset(p, tree_offset);
     if (!tree)
-        return NULL;
-
-    // Add assertions for validation
+        return 0;
     BTREE_ASSERT(key != NULL || key_length == 0, "NULL key with non-zero length in btree_search");
-    
-    check_in_pool(hidden_pool, tree);
-    check_in_pool(hidden_pool, tree->left);
-    check_in_pool(hidden_pool, tree->right);
-    //check_in_pool(hidden_pool, tree->data);
-
-    //printf("mega_tree_search: Comparing '%s'(%d) and '%s'(%d)\n", val->key , val->key_length, data->key, data->key_length);
-
+    check_in_pool(p, tree, "search: tree");
+    check_in_pool(p, btree_from_offset(p, tree->left), "search: left");
+    check_in_pool(p, btree_from_offset(p, tree->right), "search: right");
     int comp = btree_memcmp(key, tree->key, key_length, tree->key_length);
-    if (comp < 0)
-    {
-        return btree_search(tree->left, key, key_length);
+    if (comp < 0) {
+        return btree_search(p, tree->left, key, key_length);
     }
-    else if (comp > 0)
-    {
-        return btree_search(tree->right, key, key_length);
+    else if (comp > 0) {
+        return btree_search(p, tree->right, key, key_length);
     }
-    else if (comp == 0)
-    {
-        //printf("tree search> Found %s, returning node %p\n", tree->data->key, tree);
-        return tree;
+    else if (comp == 0) {
+        return btree_to_offset(p, tree);
     }
-    printf("tree search> Could not find %s, returning NULL\n", key);
+    printf("tree search> Could not find %s, returning NULL\n", (const char*)key);
     printf("Impossible!\n");
     abort();
 }
 
-int btree_check_integrity(btree *tree, int *issues_found)
+int btree_check_integrity(mega_pool *p, ii_int tree_offset, int *issues_found)
 {
+    btree *tree = btree_from_offset(p, tree_offset);
     if (!tree) return 1;  // Empty tree is valid
-    
-    // Check for corruption markers
     if ((tree->bumper != 0) || (tree->bumperl != 0)) {
         if (issues_found) (*issues_found)++;
         fprintf(stderr, "Tree integrity check: Corruption markers detected\n");
         return 0;
     }
-    
-    // Check for NULL key with non-zero length
     if (!tree->key && tree->key_length > 0) {
         if (issues_found) (*issues_found)++;
         fprintf(stderr, "Tree integrity check: NULL key with non-zero length\n");
         return 0;
     }
-    
-    // Recursively check children
-    int left_ok = btree_check_integrity(tree->left, issues_found);
-    int right_ok = btree_check_integrity(tree->right, issues_found);
-    
-    // Check BST property - each node's key should be greater than all keys in left subtree
-    // and less than all keys in right subtree
-    // This would be complex to implement fully, but could be added for completeness
-    
+    int left_ok = btree_check_integrity(p, tree->left, issues_found);
+    int right_ok = btree_check_integrity(p, tree->right, issues_found);
     return left_ok && right_ok;
 }
 
 
 
-int btree_validate(btree *tree)
+int btree_validate(mega_pool *p, ii_int tree_offset)
 {
+    btree *tree = btree_from_offset(p, tree_offset);
     if (!tree) return 1; // Empty tree is valid
-    
-    // Check for corruption markers
     if ((tree->bumper != 0) || (tree->bumperl != 0)) {
         printf("Tree corruption detected: non-zero bumper values\n");
         return 0;
     }
-    
-    // Check for null key with non-zero length
     if (tree->key == NULL && tree->key_length > 0) {
         printf("Tree corruption detected: NULL key with length %d\n", tree->key_length);
         return 0;
     }
-    
-    // Check children recursively
     int left_valid = 1;
     int right_valid = 1;
-    
-    if (tree->left) {
-        left_valid = btree_validate(tree->left);
-        // Verify BST property: all keys in left subtree < current key
-        if (left_valid && btree_memcmp(tree->left->key, tree->key, 
-                                     tree->left->key_length, tree->key_length) >= 0) {
+    btree *left = btree_from_offset(p, tree->left);
+    btree *right = btree_from_offset(p, tree->right);
+    if (left) {
+        left_valid = btree_validate(p, tree->left);
+        if (left_valid && btree_memcmp(left->key, tree->key, left->key_length, tree->key_length) >= 0) {
             printf("BST property violation: left child key >= parent key\n");
             return 0;
         }
     }
-    
-    if (tree->right) {
-        right_valid = btree_validate(tree->right);
-        // Verify BST property: all keys in right subtree > current key
-        if (right_valid && btree_memcmp(tree->right->key, tree->key,
-                                      tree->right->key_length, tree->key_length) <= 0) {
+    if (right) {
+        right_valid = btree_validate(p, tree->right);
+        if (right_valid && btree_memcmp(right->key, tree->key, right->key_length, tree->key_length) <= 0) {
             printf("BST property violation: right child key <= parent key\n");
             return 0;
         }
     }
-    
     return left_valid && right_valid;
 }
 
 
-void btree_test_tree()
+void btree_test_tree(mega_pool *p)
 {
-    btree *root;
-    btree *tmp;
-    //int i;
-
-    root = NULL;
+    ii_int root_offset = 0;
+    ii_int tmp_offset;
     /* Inserting nodes into tree */
-    root = btree_insert(hidden_pool, root,  mega_insert(hidden_pool, "Inserting", 10), 10, "a", 2);
-    root = btree_insert(hidden_pool, root,  mega_insert(hidden_pool, "nodes", 6), 6, "a", 2);
-    root = btree_insert(hidden_pool, root,  mega_insert(hidden_pool, "into", 5), 5, "a",  2);
-    root = btree_insert(hidden_pool, root,  mega_insert(hidden_pool, "tree", 5), 5, "a",  2);
-
+    root_offset = btree_insert(p, root_offset, mega_insert(p, "Inserting", 10), 10, "a", 2);
+    root_offset = btree_insert(p, root_offset, mega_insert(p, "nodes", 6), 6, "a", 2);
+    root_offset = btree_insert(p, root_offset, mega_insert(p, "into", 5), 5, "a", 2);
+    root_offset = btree_insert(p, root_offset, mega_insert(p, "tree", 5), 5, "a", 2);
     /* Printing nodes of tree */
     printf("Pre Order Display\n");
-    btree_print_preorder(root);
-
+    btree_print_preorder(p, root_offset);
     printf("In Order Display\n");
-    btree_print_inorder(root);
-
+    btree_print_inorder(p, root_offset);
     printf("Post Order Display\n");
-    btree_print_postorder(root);
-
+    btree_print_postorder(p, root_offset);
     /* Search node into tree */
-    tmp = btree_search(root,  mega_insert(hidden_pool, "tree", 5), 5);
+    tmp_offset = btree_search(p, root_offset, mega_insert(p, "tree", 5), 5);
+    btree *tmp = btree_from_offset(p, tmp_offset);
     if (tmp)
     {
-        printf("Searched node=%d\n", tmp->data);
+        printf("Searched node=%d\n", (int)(intptr_t)tmp->data);
     }
     else
     {
         printf("Data Not found in tree->\n");
     }
-
     /* Deleting all nodes of tree */
     //deltree(root);
+}
+
+
+int btree_iterate(mega_pool *p, ii_int tree_offset, int (*callback)(const void*, int, void*, int, void*), void* userdata)
+{
+    btree *tree = btree_from_offset(p, tree_offset);
+    if (!btree_validate(p, tree_offset)) {
+        printf("tree corrupted\n");
+        abort();
+    }
+    printf("Iterating %p\n", tree);
+    if (tree) {
+        printf("Left %p, right %p, key %p, data %p\n", btree_from_offset(p, tree->left), btree_from_offset(p, tree->right), tree->key, tree->data);
+        int quit = btree_iterate(p, tree->left, callback, userdata);
+        if (quit) return 1;
+        quit = callback(tree->key, tree->key_length, tree->data, tree->data_length, userdata);
+        if (quit) return 1;
+        quit = btree_iterate(p, tree->right, callback, userdata);
+        return 0;
+    }
+    return 1;
 }

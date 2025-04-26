@@ -262,19 +262,21 @@ func (s *BoltDbShim) KeyHistory(key []byte) ([][]byte, error) {
 
 
 func (s *BoltDbShim) Get(key []byte) ([]byte, error) {
-	var v []byte = nil
+	var out []byte = nil
 	s.boltHandle.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("Blocks"))
-		v = b.Get(key)
+		v := b.Get(key)
+		out = make([]byte, len(v))
+		copy(out, v)
 		return nil
 	})
 	var err error
-	if v != nil && len(v) == 0 {
+	if out != nil && len(out) == 0 {
 		// Key exists but value is empty
-	} else if v == nil {
+	} else if out == nil {
 		err = fmt.Errorf("key not found")
 	}
-	return v, err
+	return out, err
 }
 
 func (s *BoltDbShim) Put(key []byte, val []byte) error {

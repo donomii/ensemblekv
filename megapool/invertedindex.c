@@ -23,6 +23,10 @@
 *
 */
 
+#ifndef II_INCLUDED
+#define II_INCLUDED
+
+
 #ifndef SPLINT
 #include <stdarg.h>
 #include <stdio.h>
@@ -1445,3 +1449,5 @@ ii_search_command_line_switch (char * searchString, int argc, char *argv[]) {
 	}
 	return(0);
 }
+
+#endif // II_INCLUDED
