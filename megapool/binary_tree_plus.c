@@ -26,40 +26,49 @@ int btree_memcmp(const void *a, const void *b, int lena, int lenb)
     return res;
 }
 
-btree *btree_insert(mega_pool *p, btree *tree, void *key, btree_int key_length, void *data, btree_int data_length )
+btree *btree_insert(mega_pool *p, btree *tree, void *key, btree_int key_length, void *data, btree_int data_length)
 {
+    // Validate input parameters
+    if (!key || key_length <= 0) {
+        fprintf(stderr, "btree_insert: Invalid key parameters\n");
+        return tree;  // Return original tree unchanged
+    }
+    
     btree *temp = NULL;
-    if (!tree)
-    {
+    if (!tree) {
+        // Validate memory allocation
         temp = (btree *)mega_malloc(p, sizeof(btree));
+        if (!temp) {
+            fprintf(stderr, "btree_insert: Memory allocation failed\n");
+            return NULL;
+        }
+        
         temp->bumper = 0;
         temp->left = NULL;
         temp->right = NULL;
         temp->key = key;
         temp->key_length = key_length;
-        temp->data=data;
-        temp->data_length=data_length;
+        temp->data = data;
+        temp->data_length = data_length;
         temp->bumperl = 0;
         return temp;
     }
-    if ((tree->bumper != 0) || (tree->bumperl != 0))
-    {
-        printf("tree> Data corruption!\n");
-        abort();
-    }
     
+    // Check for data corruption
+    if ((tree->bumper != 0) || (tree->bumperl != 0)) {
+        fprintf(stderr, "btree_insert: Data corruption detected!\n");
+        return tree;  // Return original tree rather than aborting
+    }
 
     int comp = btree_memcmp(key, tree->key, key_length, tree->key_length);
 
-    if (comp < 0)
-    {
+    if (comp < 0) {
         tree->left = btree_insert(p, tree->left, key, key_length, data, data_length);
     }
-
-    else if (comp > 0)
-    {
+    else if (comp > 0) {
         tree->right = btree_insert(p, tree->right, key, key_length, data, data_length);
     }
+    // If comp == 0, we found a match but don't update it (that's what btree_set is for)
 
     return tree;
 }
