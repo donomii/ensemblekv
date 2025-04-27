@@ -1,3 +1,4 @@
+
 package ensemblekv
 
 import (
@@ -5,6 +6,13 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"bytes"
+
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
 
 	nudb "github.com/iand/gonudb"
 	bolt "go.etcd.io/bbolt"
@@ -501,4 +509,133 @@ func (s *PudgeShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, erro
 // PudgeCreator is the creator function for PudgeShim
 func PudgeCreator(directory string, blockSize , filesize int64) (KvLike, error) {
 	return NewPudgeShim(directory, blockSize, filesize)
+}
+// S3Shim implements KvLike for S3-compatible object storage.
+type S3Shim struct {
+	DefaultOps
+	client     *s3.S3
+	bucketName string
+	prefix     string
+}
+
+// NewS3Shim creates a new S3Shim.
+func NewS3Shim(endpoint, accessKey, secretKey, region, bucketName, prefix string) (*S3Shim, error) {
+	sess, err := session.NewSession(&aws.Config{
+		Region:           aws.String(region),
+		Endpoint:         aws.String(endpoint),
+		S3ForcePathStyle: aws.Bool(true),
+		Credentials:      credentials.NewStaticCredentials(accessKey, secretKey, ""),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create S3 session: %w", err)
+	}
+
+	client := s3.New(sess)
+	return &S3Shim{
+		client:     client,
+		bucketName: bucketName,
+		prefix:     prefix,
+	}, nil
+}
+
+func (s *S3Shim) keyToPath(key []byte) string {
+	if s.prefix == "" {
+		return string(key)
+	}
+	return s.prefix + "/" + string(key)
+}
+
+func (s *S3Shim) Get(key []byte) ([]byte, error) {
+	out, err := s.client.GetObject(&s3.GetObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(s.keyToPath(key)),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer out.Body.Close()
+
+	buf := new(bytes.Buffer)
+	_, err = buf.ReadFrom(out.Body)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func (s *S3Shim) Put(key []byte, val []byte) error {
+	_, err := s.client.PutObject(&s3.PutObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(s.keyToPath(key)),
+		Body:   bytes.NewReader(val),
+	})
+	return err
+}
+
+func (s *S3Shim) Exists(key []byte) bool {
+	_, err := s.client.HeadObject(&s3.HeadObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(s.keyToPath(key)),
+	})
+	return err == nil
+}
+
+func (s *S3Shim) Delete(key []byte) error {
+	_, err := s.client.DeleteObject(&s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(s.keyToPath(key)),
+	})
+	return err
+}
+
+func (s *S3Shim) Flush() error {
+	// S3 is immediately consistent for new objects so nothing needed
+	return nil
+}
+
+func (s *S3Shim) Close() error {
+	// S3 client doesn't need explicit closing
+	return nil
+}
+
+func (s *S3Shim) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
+	keys := make(map[string]bool)
+
+	input := &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucketName),
+		Prefix: aws.String(s.prefix),
+	}
+	err := s.client.ListObjectsV2Pages(input, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
+		for _, obj := range page.Contents {
+			keyStr := *obj.Key
+			key := []byte(keyStr)
+			if s.prefix != "" && len(keyStr) > len(s.prefix)+1 {
+				key = []byte(keyStr[len(s.prefix)+1:])
+			}
+			val, err := s.Get(key)
+			if err != nil {
+				continue
+			}
+			keys[string(key)] = true
+			_ = f(key, val)
+		}
+		return true
+	})
+	if err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
+func (s *S3Shim) Size() int64 {
+	// S3 doesn't provide a direct way to count objects
+	// This is a placeholder implementation
+	return 0
+}
+
+// S3Creator is the creator function for S3Shim
+func S3Creator(endpoint, accessKey, secretKey, region, bucketName, prefix string) CreatorFunc {
+	return func(_ string, _ int64, _ int64) (KvLike, error) {
+		return NewS3Shim(endpoint, accessKey, secretKey, region, bucketName, prefix)
+	}
 }

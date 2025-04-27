@@ -10,14 +10,12 @@ I didn't want to write my own key-value store, so instead I wrote a small progra
 
 # EnsembleKV: Scalable Multi-Store Key-Value Systems
 
-EnsembleKV is a collection of key-value store implementations designed for handling large-scale data with efficient distribution and automatic scaling. It provides multiple approaches to distributing data across underlying stores, each optimized for different use cases.
+EnsembleKV is a collection of key-value store implementations designed for handling large-scale data with efficient distribution. It provides multiple approaches to distributing data across underlying stores, each optimized for different use cases.
 
 ## Core Features
 
-- Automatic data distribution and rebalancing
+- Automatic data distribution
 - Support for multiple backend stores
-- Concurrent access with thread safety
-- Automatic store splitting when size thresholds are reached
 - Configurable block sizes and store limits
 - Simple, consistent interface across all implementations
 
@@ -45,75 +43,6 @@ Key features:
 - Automatic doubling of substores when capacity is reached
 - Even distribution using consistent hashing
 - Good for random access patterns
-
-### TreeLSM
-
-A hierarchical store that organizes data in a tree structure based on key hashes. Each node splits into 16 substores when capacity is reached.
-
-```go
-// Create a new TreeLSM store using JsonKV as the backend
-store, err := NewTreeLSM("/path/to/store", 4096, JsonKVCreator)
-if err != nil {
-    log.Fatal(err)
-}
-defer store.Close()
-
-// Use the store
-err = store.Put([]byte("key"), []byte("value"))
-value, err := store.Get([]byte("key"))
-```
-
-Key features:
-- Hierarchical organization with prefix-based routing
-- 16-way splits when capacity is reached
-- Good for prefix-based queries
-- Efficient for localized access patterns
-
-### StarLSM
-
-Similar to TreeLSM but uses a more dynamic splitting strategy based on hash prefixes. Splits create new levels of depth as needed.
-
-```go
-// Create a new StarLSM store using ExtentKV as the backend
-store, err := NewStarLSM("/path/to/store", 4096, ExtentCreator)
-if err != nil {
-    log.Fatal(err)
-}
-defer store.Close()
-
-// Use the store
-err = store.Put([]byte("key"), []byte("value"))
-value, err := store.Get([]byte("key"))
-```
-
-Key features:
-- Dynamic depth-based splitting
-- Hash-based distribution
-- Good for uniform data distribution
-- Efficient for random access patterns
-
-### LineLSM
-
-A tiered LSM-tree implementation that organizes data in levels with increasing size limits. Supports automatic compaction and merging.
-
-```go
-// Create a new LineLSM store using BoltDB as the backend
-store, err := LineLSMCreator("/path/to/store", 4096, BoltDbCreator)
-if err != nil {
-    log.Fatal(err)
-}
-defer store.Close()
-
-// Use the store
-err = store.Put([]byte("key"), []byte("value"))
-value, err := store.Get([]byte("key"))
-```
-
-Key features:
-- Multiple tiers with increasing size limits
-- Automatic compaction and merging
-- Support for tombstones
-- Good for write-heavy workloads
 
 ## Available Backend Stores
 
@@ -159,49 +88,13 @@ type EnsembleKv struct {
 }
 ```
 
-### LineLSM
-```go
-// Tier size limits
-maxTierSizes: []int64{
-    64 * 1024 * 1024,    // Tier 0: 64MB
-    256 * 1024 * 1024,   // Tier 1: 256MB
-    1024 * 1024 * 1024,  // Tier 2: 1GB
-    4096 * 1024 * 1024,  // Tier 3: 4GB
-}
-```
 
-### TreeLSM/StarLSM
-```go
-const maxStoreSize = 64 * 1024 * 1024 // 64MB before splitting
-```
-
-## Performance Considerations
-
-- **EnsembleKV**: Best for random access patterns and uniform key distribution
-- **TreeLSM**: Best for prefix-based queries and localized access patterns
-- **StarLSM**: Best for uniform distribution with dynamic scaling
-- **LineLSM**: Best for write-heavy workloads with periodic compaction
 
 ## Example: Choosing the Right Store
 
 1. For general purpose use with good scaling:
 ```go
 store := EnsembleCreator("/path/to/store", 4096, BoltDbCreator)
-```
-
-2. For prefix-based queries or hierarchical data:
-```go
-store := NewTreeLSM("/path/to/store", 4096, BoltDbCreator)
-```
-
-3. For write-heavy workloads:
-```go
-store := LineLSMCreator("/path/to/store", 4096, BoltDbCreator)
-```
-
-4. For dynamic scaling with uniform distribution:
-```go
-store := NewStarLSM("/path/to/store", 4096, BoltDbCreator)
 ```
 
 ## Error Handling
@@ -226,13 +119,7 @@ if err != nil {
 
 ## Contributing
 
-Contributions are welcome! Areas that need attention:
-
-- Performance benchmarking improvements
-- Additional backend store implementations
-- Better crash handling and recovery
-- Documentation and examples
-- Test coverage
+Contributions are welcome!
 
 ## License
 
