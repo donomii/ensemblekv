@@ -1,59 +1,56 @@
-
 package ensemblekv
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log"
 	"os"
-	"bytes"
-
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 
-	nudb "github.com/iand/gonudb"
-	bolt "go.etcd.io/bbolt"
 	"path/filepath"
+
+	nudb "github.com/iand/gonudb"
 	"github.com/recoilme/pudge"
+	bolt "go.etcd.io/bbolt"
 )
 
 type CreatorFunc func(directory string, blockSize, fileSize int64) (KvLike, error)
 
-
 // ExtentKeyValueStore is a key-value store that uses a single storage file and an index file to store data.  It can ingest a large amount of data at close to the maximum transfer speed of the drive, and still have reasonable performance.  Deletes do not recover disk space, compaction is required.
-func ExtentCreator(directory string, blockSize , fileSize int64) (KvLike, error) {
+func ExtentCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
 	return NewExtentKeyValueStore(directory, blockSize, fileSize)
 }
 
 func SingleFileKVCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
-	store:= NewSingleFileKVStore(directory+"/singlefilekv", blockSize, int64(fileSize))
+	store := NewSingleFileKVStore(directory+"/singlefilekv", blockSize, int64(fileSize))
 	return store, nil
 }
 
-
-func NuDbCreator(directory string, blockSize , fileSize int64) (KvLike, error) {
+func NuDbCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
 	return NewNuDbShim(directory, blockSize, fileSize)
 }
 
-func BoltDbCreator(directory string, blockSize , fileSize int64) (KvLike, error) {
+func BoltDbCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
 	return NewBoltDbShim(directory, blockSize, fileSize)
 }
 
-func EnsembleCreator(directory string, blockSize, filesize int64, creator CreatorFunc ) (KvLike, error) {
+func EnsembleCreator(directory string, blockSize, filesize int64, creator CreatorFunc) (KvLike, error) {
 	N := int64(3)          //Number of sub-stores
 	maxKeys := int64(1000) //Max number of keys in each sub-store, before it is split
 
 	return NewEnsembleKv(directory, N, blockSize, maxKeys, filesize, creator)
 }
 
-func LineLSMCreator(directory string, blockSize int64, fileSize int64,creator CreatorFunc) (KvLike, error) {
+func LineLSMCreator(directory string, blockSize int64, fileSize int64, creator CreatorFunc) (KvLike, error) {
 	return NewLinelsm(directory, blockSize, 1000, fileSize, creator)
 }
 
-func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize, substores , filesize int64) KvLike {
+func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize, substores, filesize int64) KvLike {
 	// Initialise.
 
 	switch tipe {
@@ -82,7 +79,7 @@ func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize, substores 
 			panic(err)
 		}
 		return h
-	
+
 	case "ensemble":
 		var creator CreatorFunc
 		switch subtipe {
@@ -98,7 +95,7 @@ func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize, substores 
 			panic("Unknown substore type: " + subtipe)
 		}
 
-		h, err := NewEnsembleKv(location, 60, 10*1024*1024, 100000, filesize, func(path string, blockSize , filesize int64) (KvLike, error) {
+		h, err := NewEnsembleKv(location, 60, 10*1024*1024, 100000, filesize, func(path string, blockSize, filesize int64) (KvLike, error) {
 			kvstore, err := creator(path, blockSize, filesize)
 			if err != nil {
 				panic(err)
@@ -163,17 +160,17 @@ func NewNuDbShim(filename string, blockSize, fileSize int64) (*nuDbShim, error) 
 
 // For NuDbShim:
 func (s *nuDbShim) Size() int64 {
-    var count int64
-    // NuDB doesn't provide a direct way to count entries
-    // We'll need to iterate through the store
-    _, err := s.MapFunc(func(k, v []byte) error {
-        count++
-        return nil
-    })
-    if err != nil {
-        return 0
-    }
-    return count
+	var count int64
+	// NuDB doesn't provide a direct way to count entries
+	// We'll need to iterate through the store
+	_, err := s.MapFunc(func(k, v []byte) error {
+		count++
+		return nil
+	})
+	if err != nil {
+		return 0
+	}
+	return count
 }
 
 func (s *nuDbShim) Get(key []byte) ([]byte, error) {
@@ -218,8 +215,6 @@ func (s *nuDbShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, error
 	panic("lol")
 }
 
-
-
 type BoltDbShim struct {
 	DefaultOps
 	directory  string
@@ -229,7 +224,7 @@ type BoltDbShim struct {
 func NewBoltDbShim(directory string, blockSize, filesize int64) (*BoltDbShim, error) {
 	s := BoltDbShim{}
 	s.directory = directory
-	
+
 	// Ensure directory exists
 	if err := os.MkdirAll(directory, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
@@ -264,27 +259,34 @@ func (s *BoltDbShim) KeyHistory(key []byte) ([][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return [][]byte{value}, nil
 }
 
-
 func (s *BoltDbShim) Get(key []byte) ([]byte, error) {
 	var out []byte = nil
+	var exists bool = false
 	s.boltHandle.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("Blocks"))
 		v := b.Get(key)
+		if v == nil {
+			return nil
+		}
+		exists = true
+		// Copy the value to avoid referencing the underlying data
 		out = make([]byte, len(v))
 		copy(out, v)
 		return nil
 	})
-	var err error
-	if out != nil && len(out) == 0 {
-		// Key exists but value is empty
-	} else if out == nil {
-		err = fmt.Errorf("key not found")
+	if !exists {
+		return nil, fmt.Errorf("key not found")
 	}
-	return out, err
+
+	if out == nil {
+		return nil, fmt.Errorf("key not found")
+	}
+
+	return out, nil
 }
 
 func (s *BoltDbShim) Put(key []byte, val []byte) error {
@@ -362,19 +364,17 @@ func (s *BoltDbShim) List() ([]string, error) {
 }
 
 func (s *BoltDbShim) Size() int64 {
-    var count int64
-    s.boltHandle.View(func(tx *bolt.Tx) error {
-        b := tx.Bucket([]byte("Blocks"))
-        c := b.Cursor()
-        for k, _ := c.First(); k != nil; k, _ = c.Next() {
-            count++
-        }
-        return nil
-    })
-    return count
+	var count int64
+	s.boltHandle.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("Blocks"))
+		c := b.Cursor()
+		for k, _ := c.First(); k != nil; k, _ = c.Next() {
+			count++
+		}
+		return nil
+	})
+	return count
 }
-
-
 
 type PudgeShim struct {
 	DefaultOps
@@ -382,7 +382,7 @@ type PudgeShim struct {
 	db       *pudge.Db
 }
 
-func NewPudgeShim(directory string, blockSize , filesize int64) (*PudgeShim, error) {
+func NewPudgeShim(directory string, blockSize, filesize int64) (*PudgeShim, error) {
 	s := &PudgeShim{
 		filename: filepath.Join(directory, "pudge.db"),
 	}
@@ -390,7 +390,7 @@ func NewPudgeShim(directory string, blockSize , filesize int64) (*PudgeShim, err
 	// Configure Pudge
 	cfg := pudge.DefaultConfig
 	cfg.SyncInterval = 1000 // Sync every 1000ms for balance of performance/safety
-	
+
 	// Open the database
 	db, err := pudge.Open(s.filename, cfg)
 	if err != nil {
@@ -407,7 +407,7 @@ func (s *PudgeShim) KeyHistory(key []byte) ([][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return [][]byte{value}, nil
 }
 
@@ -462,7 +462,7 @@ func (s *PudgeShim) Flush() error {
 
 	cfg := pudge.DefaultConfig
 	cfg.SyncInterval = 1000
-	
+
 	db, err := pudge.Open(s.filename, cfg)
 	if err != nil {
 		return err
@@ -488,7 +488,7 @@ func (s *PudgeShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, erro
 	}
 
 	visited := make(map[string]bool)
-	
+
 	// Iterate through keys
 	for _, key := range keys {
 		var value []byte
@@ -496,7 +496,7 @@ func (s *PudgeShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, erro
 		if err != nil {
 			continue // Skip errored entries
 		}
-		
+
 		visited[string(key)] = true
 		if err := f(key, value); err != nil {
 			return visited, err
@@ -507,9 +507,10 @@ func (s *PudgeShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, erro
 }
 
 // PudgeCreator is the creator function for PudgeShim
-func PudgeCreator(directory string, blockSize , filesize int64) (KvLike, error) {
+func PudgeCreator(directory string, blockSize, filesize int64) (KvLike, error) {
 	return NewPudgeShim(directory, blockSize, filesize)
 }
+
 // S3Shim implements KvLike for S3-compatible object storage.
 type S3Shim struct {
 	DefaultOps
