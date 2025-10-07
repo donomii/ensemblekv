@@ -486,6 +486,8 @@ func (s *ExtentKeyValStore) loadValuesIndexCache() error {
 // processing records in forward order. This routine should only be called
 // when EnableIndexCaching is true.
 func (s *ExtentKeyValStore) loadKeyCache() error {
+	s.globalLock.Lock()
+	defer s.globalLock.Unlock()
 	// This routine should only be called when caching is enabled.
 	if !EnableIndexCaching {
 		return fmt.Errorf("loadKeyCache should not be called when caching is disabled")
