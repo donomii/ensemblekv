@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sync"
 
 	"github.com/donomii/clusterF/syncmap"
 	"github.com/donomii/goof"
+	"github.com/sasha-s/go-deadlock"
 )
 
 var EnableIndexCaching bool = true // Feature flag for index caching
@@ -212,7 +212,7 @@ type ExtentKeyValStore struct {
 	keysIndex   *os.File
 	valuesIndex *os.File
 	blockSize   int64
-	globalLock  sync.Mutex
+	globalLock  deadlock.Mutex
 	cache       *syncmap.SyncMap[string, bool]
 
 	// New fields for index caching
@@ -424,7 +424,6 @@ func NewExtentKeyValueStore(directory string, blockSize, filesize int64) (*Exten
 
 	if EnableIndexCaching {
 		s.ClearCache()
-		s.loadKeyCache()
 	}
 
 	return s, nil
@@ -518,7 +517,7 @@ func (s *ExtentKeyValStore) loadKeyCache() error {
 			break
 		}
 		//debugf("KEY   Entry: %d, BytePosition: %d\n", entry, keyPos)
-		keyData, deleted, err := readDataAtIndexPos(int64(entry*8), s.keysIndex, s.keysFile, s.keysIndexCache)
+		keyData, deleted, err := s.readDataAtIndexPos(int64(entry*8), s.keysIndex, s.keysFile, s.keysIndexCache)
 		panicOnError("Read key data", err)
 		//debugf("searchDbForKeyExists KEY   Entry: %d, BytePosition: %d, Deleted: %t, Key: %s\n", entry, keyPos, deleted, trimTo40(keyData))
 
@@ -555,7 +554,8 @@ func (s *ExtentKeyValStore) loadKeyCache() error {
 // its deletion flag and value boundaries are used to either report that the key is deleted
 // or to load its corresponding value from values.dat.
 func (s *ExtentKeyValStore) forwardScanForKey(key []byte) ([]byte, error) {
-
+	s.globalLock.Lock()
+	defer s.globalLock.Unlock()
 	checkLastIndexEntry(s.keysIndex, s.keysFile)
 	checkLastIndexEntry(s.valuesIndex, s.valuesFile)
 	checkIndexSigns(s.keysIndex, s.valuesIndex)
@@ -578,7 +578,7 @@ func (s *ExtentKeyValStore) forwardScanForKey(key []byte) ([]byte, error) {
 
 	debugln("forwardScanForKey: Retrieving value for key", trimTo40(key), "at offset", offset)
 	checkIndexSigns(s.keysIndex, s.valuesIndex)
-	value, _, err := readDataAtIndexPos(offset, s.valuesIndex, s.valuesFile, s.valuesIndexCache)
+	value, _, err := s.readDataAtIndexPos(offset, s.valuesIndex, s.valuesFile, s.valuesIndexCache)
 	if err != nil {
 		return nil, fmt.Errorf("forwardScanForKey: failed to read value: %v", err)
 	}
@@ -623,7 +623,7 @@ func (s *ExtentKeyValStore) KeyHistory(key []byte) ([][]byte, error) {
 		}
 
 		// Read the key at this entry
-		keyData, deleted, err := readDataAtIndexPos(int64(entry*8), s.keysIndex, s.keysFile, s.keysIndexCache)
+		keyData, deleted, err := s.readDataAtIndexPos(int64(entry*8), s.keysIndex, s.keysFile, s.keysIndexCache)
 		if err != nil {
 			entry++
 			continue
@@ -632,7 +632,7 @@ func (s *ExtentKeyValStore) KeyHistory(key []byte) ([][]byte, error) {
 		// If this is the key we're looking for and not deleted
 		if bytes.Equal(keyData, key) && !deleted {
 			// Get the value
-			valueData, _, err := readDataAtIndexPos(int64(entry*8), s.valuesIndex, s.valuesFile, s.valuesIndexCache)
+			valueData, _, err := s.readDataAtIndexPos(int64(entry*8), s.valuesIndex, s.valuesFile, s.valuesIndexCache)
 			if err != nil {
 				entry++
 				continue
@@ -765,9 +765,6 @@ func readNbytes(file *os.File, n int) ([]byte, error) {
 
 // --- Modify Get() similarly to update the counters.
 func (s *ExtentKeyValStore) Get(key []byte) ([]byte, error) {
-	s.globalLock.Lock()
-	defer s.globalLock.Unlock()
-
 	s.maybePrintCacheStats() // Increment request counter and print stats every 100th call
 
 	if EnableIndexCaching {
@@ -798,7 +795,7 @@ func (s *ExtentKeyValStore) Get(key []byte) ([]byte, error) {
 // 3. Read the data file from dataPos to end of block
 
 // Modify readDataAtIndexPos to use caching
-func readDataAtIndexPos(indexPosition int64, indexFile *os.File, dataFile *os.File, cache []byte) ([]byte, bool, error) {
+func (s *ExtentKeyValStore) readDataAtIndexPos(indexPosition int64, indexFile *os.File, dataFile *os.File, cache []byte) ([]byte, bool, error) {
 	dataFileLength, err := dataFile.Seek(0, 2)
 	indexFileLength, err := indexFile.Seek(0, 2)
 	deleted := false
@@ -938,6 +935,7 @@ func (s *ExtentKeyValStore) MapFunc(f func([]byte, []byte) error) (map[string]bo
 func (s *ExtentKeyValStore) Delete(key []byte) error {
 	s.globalLock.Lock()
 	defer s.globalLock.Unlock()
+
 	checkIndexSigns(s.keysIndex, s.valuesIndex)
 
 	if EnableIndexCaching {
@@ -1063,6 +1061,8 @@ func (s *ExtentKeyValStore) Delete(key []byte) error {
 }
 
 func (s *ExtentKeyValStore) doFlush() error {
+	s.globalLock.Lock()
+	defer s.globalLock.Unlock()
 
 	err := s.keysFile.Sync()
 	if err != nil {
@@ -1084,19 +1084,18 @@ func (s *ExtentKeyValStore) doFlush() error {
 }
 
 func (s *ExtentKeyValStore) Flush() error {
-	s.globalLock.Lock()
-	defer s.globalLock.Unlock()
+
 	return s.doFlush()
 }
 
 func (s *ExtentKeyValStore) DumpIndex() error {
-	s.globalLock.Lock()
-	defer s.globalLock.Unlock()
 
 	return s.DumpIndexLockFree()
 }
 
 func (s *ExtentKeyValStore) DumpIndexLockFree() error {
+	s.globalLock.Lock()
+	defer s.globalLock.Unlock()
 
 	s.doFlush()
 	debugln("==========DUMPING INDEX==========")
@@ -1120,7 +1119,7 @@ func (s *ExtentKeyValStore) DumpIndexLockFree() error {
 			break
 		}
 		debugf("KEY   Entry: %d, BytePosition: %d, cache length: %d, keyIndexFileLength: %d\n", entry, keyPos, len(s.keysIndexCache), keyIndexFileLength)
-		key, deleted, err := readDataAtIndexPos(int64(entry*8), s.keysIndex, s.keysFile, s.keysIndexCache)
+		key, deleted, err := s.readDataAtIndexPos(int64(entry*8), s.keysIndex, s.keysFile, s.keysIndexCache)
 		panicOnError("Read key data", err)
 		debugf("KEY   Entry: %d, BytePosition: %d, Deleted: %t, Key: %s\n", entry, keyPos, deleted, trimTo40(key))
 
@@ -1151,60 +1150,6 @@ func (s *ExtentKeyValStore) Size() int64 {
 		return 0
 	}
 	return count
-}
-
-func (s *ExtentKeyValStore) LockFreeMapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
-	dataFileLen, err := s.keysFile.Seek(0, io.SeekEnd)
-	_, err = s.keysFile.Seek(0, 0)
-	panicOnError("Seek to start of keys data file", err)
-	_, err = s.keysIndex.Seek(0, 0)
-	panicOnError("Seek to start of keys index file", err)
-	_, err = s.valuesFile.Seek(0, 0)
-	panicOnError("Seek to start of values data file", err)
-	_, err = s.valuesIndex.Seek(0, 0)
-	panicOnError("Seek to start of values index file", err)
-
-	var validKeys = make(map[string]bool)
-	//start at the end of the keysIndex file
-	keyIndexPosStart, err := s.keysIndex.Seek(-8, 2)
-	panicOnError("Seek to end of keys index file", err)
-
-	for {
-		keyIndexPosStart = keyIndexPosStart - 8
-		if keyIndexPosStart < 0 {
-			return validKeys, nil
-		}
-
-		if keyIndexPosStart == dataFileLen {
-			panic("Key index position is at the end of the data file")
-		}
-
-		keyData, deleted, err := readDataAtIndexPos(keyIndexPosStart, s.keysIndex, s.keysFile, s.keysIndexCache)
-		if err != nil {
-			return nil, fmt.Errorf("LockFreeMapFunc: failed to read key data: %w", err)
-		}
-
-		// check if this is a tombstone.  A position of -1 indicates a deleted key
-		if deleted {
-			validKeys[string(keyData)] = false
-			continue
-		} else {
-			validKeys[string(keyData)] = true
-		}
-
-		if keyIndexPosStart == dataFileLen {
-			panic("Key index position is at the end of the data file")
-		}
-
-		valueBuffer, _, err := readDataAtIndexPos(keyIndexPosStart, s.valuesIndex, s.valuesFile, s.valuesIndexCache)
-		if err != nil {
-			return nil, fmt.Errorf("LockFreeMapFunc: failed to read value data: %w", err)
-		}
-		err = f(keyData, valueBuffer)
-		if err != nil {
-			return nil, fmt.Errorf("LockFreeMapFunc: failed to process key-value pair: %w", err)
-		}
-	}
 }
 
 // searchDbForKeyExists performs a forward scan of the keys index and keys data files.
@@ -1240,7 +1185,7 @@ func (s *ExtentKeyValStore) searchDbForKeyExists(searchKey []byte, keysIndex *os
 			break
 		}
 		//debugf("KEY   Entry: %d, BytePosition: %d\n", entry, keyPos)
-		keyData, deleted, err := readDataAtIndexPos(int64(entry*8), s.keysIndex, s.keysFile, s.keysIndexCache)
+		keyData, deleted, err := s.readDataAtIndexPos(int64(entry*8), s.keysIndex, s.keysFile, s.keysIndexCache)
 		panicOnError("Read key data", err)
 		//debugf("searchDbForKeyExists KEY   Entry: %d, BytePosition: %d, Deleted: %t, Key: %s\n", entry, keyPos, deleted, trimTo40(keyData))
 
@@ -1275,8 +1220,6 @@ func (s *ExtentKeyValStore) searchDbForKeyExists(searchKey []byte, keysIndex *os
 
 // --- Modify Exists() to use and update the cache counters.
 func (s *ExtentKeyValStore) Exists(key []byte) bool {
-	s.globalLock.Lock()
-	defer s.globalLock.Unlock()
 
 	s.maybePrintCacheStats() // Increment request counter and print stats every 100th call
 
@@ -1285,6 +1228,8 @@ func (s *ExtentKeyValStore) Exists(key []byte) bool {
 		if s.cache.Len() == 0 {
 			if err := s.loadKeyCache(); err != nil {
 				// If the cache cannot be loaded, fall back to the previous behavior.
+				s.globalLock.Lock()
+				defer s.globalLock.Unlock()
 				found, _, err := s.searchDbForKeyExists(key, s.keysIndex, s.keysFile, s.keysIndexCache)
 				return err == nil && found
 			}
@@ -1297,6 +1242,8 @@ func (s *ExtentKeyValStore) Exists(key []byte) bool {
 		}
 		s.cacheMisses++ // not found in cache
 	} else {
+		s.globalLock.Lock()
+		defer s.globalLock.Unlock()
 		found, _, err := s.searchDbForKeyExists(key, s.keysIndex, s.keysFile, s.keysIndexCache)
 		debugf("err: %v and found: %v\n", err, found)
 		return err == nil && found
@@ -1306,6 +1253,8 @@ func (s *ExtentKeyValStore) Exists(key []byte) bool {
 }
 
 func (s *ExtentKeyValStore) LockFreeGet(key []byte) ([]byte, error) {
+	s.globalLock.Lock()
+	defer s.globalLock.Unlock()
 
 	checkLastIndexEntry(s.keysIndex, s.keysFile)
 	checkLastIndexEntry(s.valuesIndex, s.valuesFile)
@@ -1359,7 +1308,7 @@ func (s *ExtentKeyValStore) LockFreeGet(key []byte) ([]byte, error) {
 		}
 
 		// Read key data using cache if available
-		data, deleted, err := readDataAtIndexPos(
+		data, deleted, err := s.readDataAtIndexPos(
 			keyIndexPosStart,
 			s.keysIndex,
 			s.keysFile,
@@ -1384,7 +1333,7 @@ func (s *ExtentKeyValStore) LockFreeGet(key []byte) ([]byte, error) {
 	}
 
 	// Read value data using cache if available
-	data, _, err := readDataAtIndexPos(
+	data, _, err := s.readDataAtIndexPos(
 		keyIndexPosStart,
 		s.valuesIndex,
 		s.valuesFile,
