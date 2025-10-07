@@ -73,25 +73,25 @@ func NewSingleFileKVStore(filename string, blocksize, filesize int64) *KVStore {
 				mustMessage(err, "Failed to create file:"+filename)
 			}
 			must(f.Truncate(filesize))
-		remaining := filesize - HeaderSize
-		keySize := remaining / 100
-		indexSize := remaining / 100
-		valueSize := remaining - keySize - indexSize
-		valueStart := HeaderSize + keySize
-		indexStart := valueStart + valueSize
-		hdr := FileHeader{
-			Magic:       [4]byte{'E', 'K', 'V', 'S'},
-			Version:     1,
-			FileSize:    filesize,
-			KeysStart:   HeaderSize,
-			KeysEnd:     HeaderSize,
-			ValuesStart: valueStart,
-			ValuesEnd:   valueStart,
-			IndexStart:  indexStart,
-			IndexEnd:    indexStart,
-		}
-		must(writeHeader(f, &hdr))
-		must(f.Close())
+			remaining := filesize - HeaderSize
+			keySize := remaining / 100
+			indexSize := remaining / 100
+			valueSize := remaining - keySize - indexSize
+			valueStart := HeaderSize + keySize
+			indexStart := valueStart + valueSize
+			hdr := FileHeader{
+				Magic:       [4]byte{'E', 'K', 'V', 'S'},
+				Version:     1,
+				FileSize:    filesize,
+				KeysStart:   HeaderSize,
+				KeysEnd:     HeaderSize,
+				ValuesStart: valueStart,
+				ValuesEnd:   valueStart,
+				IndexStart:  indexStart,
+				IndexEnd:    indexStart,
+			}
+			must(writeHeader(f, &hdr))
+			must(f.Close())
 		} else {
 			// Some other error occurred
 			panic(fmt.Sprintf("Error checking file: %v", err))
@@ -220,7 +220,7 @@ func (kv *KVStore) Close() error {
 	kv.lock.Lock()
 	defer kv.lock.Unlock()
 	if kv.closed {
-		log.Printf("close called when KVStore is already closed:" + kv.path)
+		log.Print("close called when KVStore is already closed:" + kv.path)
 		return nil
 	}
 	kv.LockFreeFlush()
@@ -272,10 +272,9 @@ func (kv *KVStore) LockFreeGet(key []byte) ([]byte, error) {
 
 		keyData := mustReadAt(kv.file, lastKeyEnd, entry.KeyEnd-lastKeyEnd)
 		if bytes.Equal(keyData, key) && entry.Flags != 1 {
-			retVal =  mustReadAt(kv.file, lastValueEnd, entry.ValueEnd-lastValueEnd)
+			retVal = mustReadAt(kv.file, lastValueEnd, entry.ValueEnd-lastValueEnd)
 			found = true
 		}
-
 
 		lastKeyEnd = entry.KeyEnd
 		lastValueEnd = entry.ValueEnd
@@ -351,7 +350,7 @@ func (kv *KVStore) Size() int64 {
 	defer kv.lock.Unlock()
 	kv.assertOpen()
 	// Count up all used spsce in file
-	var size int64 =  kv.header.KeysEnd + (kv.header.ValuesEnd - kv.header.ValuesStart) + (kv.header.IndexEnd - kv.header.IndexStart)
+	var size int64 = kv.header.KeysEnd + (kv.header.ValuesEnd - kv.header.ValuesStart) + (kv.header.IndexEnd - kv.header.IndexStart)
 	return size
 }
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/donomii/clusterF/syncmap"
 	"github.com/donomii/goof"
 )
 
@@ -212,7 +213,7 @@ type ExtentKeyValStore struct {
 	valuesIndex *os.File
 	blockSize   int64
 	globalLock  sync.Mutex
-	cache       map[string]bool
+	cache       *syncmap.SyncMap[string, bool]
 
 	// New fields for index caching
 	keysIndexCache   []byte
@@ -490,6 +491,10 @@ func (s *ExtentKeyValStore) loadKeyCache() error {
 		return fmt.Errorf("loadKeyCache should not be called when caching is disabled")
 	}
 
+	if s.cache == nil {
+		s.cache = (*syncmap.SyncMap[string, bool])(syncmap.NewSyncMap[string, bool]())
+	}
+
 	keyIndexFileLength, err := s.keysIndex.Seek(0, 2)
 	panicOnError("Get key index file length", err)
 
@@ -525,7 +530,7 @@ func (s *ExtentKeyValStore) loadKeyCache() error {
 
 		//debugf("searchDbForKeyExists VALUE Entry: %d, BytePosition: %d\n", entry, valuePos)
 
-		s.cache[string(keyData)] = !deleted
+		s.cache.Store(string(keyData), !deleted)
 
 		entry++
 
@@ -661,7 +666,7 @@ func (s *ExtentKeyValStore) readIndexAt(indexFile *os.File, cache []byte, offset
 func (s *ExtentKeyValStore) ClearCache() {
 	s.keysIndexCache = nil
 	s.valuesIndexCache = nil
-	s.cache = make(map[string]bool)
+	s.cache = syncmap.NewSyncMap[string, bool]()
 }
 
 func (s *ExtentKeyValStore) Put(key, value []byte) error {
@@ -733,7 +738,7 @@ func (s *ExtentKeyValStore) Put(key, value []byte) error {
 	checkLastIndexEntry(s.valuesIndex, s.valuesFile)
 	checkIndexSigns(s.keysIndex, s.valuesIndex)
 	if EnableIndexCaching {
-		s.cache[string(key)] = true
+		s.cache.Store(string(key), true)
 	}
 	return nil
 }
@@ -764,7 +769,7 @@ func (s *ExtentKeyValStore) Get(key []byte) ([]byte, error) {
 	s.maybePrintCacheStats() // Increment request counter and print stats every 100th call
 
 	if EnableIndexCaching {
-		state, exists := s.cache[string(key)]
+		state, exists := s.cache.Load(string(key))
 		if exists {
 			s.cacheHits++ // key was found in the cache map (even though we still go to disk for value)
 			if !state {
@@ -781,7 +786,7 @@ func (s *ExtentKeyValStore) Get(key []byte) ([]byte, error) {
 	}
 
 	if EnableIndexCaching {
-		s.cache[string(key)] = true
+		s.cache.Store(string(key), true)
 	}
 	return val, nil
 }
@@ -913,18 +918,8 @@ func (s *ExtentKeyValStore) List() ([]string, error) {
 }
 
 func (s *ExtentKeyValStore) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
-	var keys []string
-
-	s.globalLock.Lock()
-	// Reinitialize the in‑memory cache.
-	s.ClearCache()
 	s.loadKeyCache()
-	for key, present := range s.cache {
-		if present {
-			keys = append(keys, key)
-		}
-	}
-	s.globalLock.Unlock()
+	keys := s.cache.Keys()
 
 	out := make(map[string]bool)
 	for _, key := range keys {
@@ -1060,7 +1055,7 @@ func (s *ExtentKeyValStore) Delete(key []byte) error {
 	checkIndexSigns(s.keysIndex, s.valuesIndex)
 
 	if EnableIndexCaching {
-		s.cache[string(key)] = false
+		s.cache.Store(string(key), false)
 	}
 	return nil
 }
@@ -1285,7 +1280,7 @@ func (s *ExtentKeyValStore) Exists(key []byte) bool {
 
 	if EnableIndexCaching {
 		// If the in‑memory cache is empty, load it completely.
-		if len(s.cache) == 0 {
+		if s.cache.Len() == 0 {
 			if err := s.loadKeyCache(); err != nil {
 				// If the cache cannot be loaded, fall back to the previous behavior.
 				found, _, err := s.searchDbForKeyExists(key, s.keysIndex, s.keysFile, s.keysIndexCache)
@@ -1293,7 +1288,7 @@ func (s *ExtentKeyValStore) Exists(key []byte) bool {
 			}
 		}
 
-		state, exists := s.cache[string(key)]
+		state, exists := s.cache.Load(string(key))
 		if exists {
 			s.cacheHits++ // found in cache
 			return state

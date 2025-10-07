@@ -6,6 +6,8 @@ github.com/coreos/go-systemd/v22 v22.5.0/go.mod h1:Y58oyj3AT4RCenI/lSvhwexgC+NSV
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/donomii/clusterF/syncmap v0.0.0-20251007202616-f5b01673a95b h1:C3J3z2ImGQ1RAZWK5qwRRjLAw0hxpxPdhuXGNdguC+k=
+github.com/donomii/clusterF/syncmap v0.0.0-20251007202616-f5b01673a95b/go.mod h1:o3A1oEbVLeuySZqI4xjZqevw3QTMORfn+l7oEQsQ9jE=
 github.com/donomii/goof v0.0.0-20230125141827-464a0fadad76 h1:JQX9Yka3DoQN1EgrdAMLobgHDXnJlD7KwhmfEpo/834=
 github.com/donomii/goof v0.0.0-20230125141827-464a0fadad76/go.mod h1:ZgIjtvUfBzQ+0aQmB+UWVb2fhB0HmbFwu76laXvZLAY=
 github.com/go-logr/logr v1.3.0 h1:2y3SDp0ZXuc6/cjLSZ+Q3ir+QB9T/iG5yYRXqsagWSY=

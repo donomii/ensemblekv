@@ -1,8 +1,6 @@
 module github.com/donomii/ensemblekv
 
-go 1.22
-
-toolchain go1.23.0
+go 1.25.1
 
 require (
 	github.com/donomii/goof v0.0.0-20230125141827-464a0fadad76
@@ -14,6 +12,7 @@ require (
 require (
 	github.com/OneOfOne/xxhash v1.2.8 // indirect
 	github.com/aws/aws-sdk-go v1.55.7 // indirect
+	github.com/donomii/clusterF/syncmap v0.0.0-20251007202616-f5b01673a95b // indirect
 	github.com/go-logr/logr v1.3.0 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
