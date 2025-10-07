@@ -211,7 +211,7 @@ func (s *nuDbShim) Close() error {
 }
 
 func (s *nuDbShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
-	// this library doesn't work anyway so why bother?
+	// hmmm
 	panic("lol")
 }
 
