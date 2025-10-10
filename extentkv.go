@@ -902,17 +902,8 @@ func (s *ExtentKeyValStore) Close() error {
 }
 
 func (s *ExtentKeyValStore) List() ([]string, error) {
-	keyMap, err := s.MapFunc(func(key []byte, value []byte) error {
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	keys := make([]string, 0, len(keyMap))
-	for k, _ := range keyMap {
-		keys = append(keys, k)
-	}
+	s.loadKeyCache()
+	keys := s.cache.Keys()
 	return keys, nil
 }
 
