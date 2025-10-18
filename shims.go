@@ -35,6 +35,10 @@ func SingleFileKVCreator(directory string, blockSize, fileSize int64) (KvLike, e
 	return store, nil
 }
 
+func SQLiteCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
+	return NewSQLiteKVStore(directory, blockSize, fileSize)
+}
+
 func NuDbCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
 	return NewNuDbShim(directory, blockSize, fileSize)
 }
@@ -77,6 +81,12 @@ func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize, substores,
 			panic(err)
 		}
 		return h
+	case "sqlite":
+		h, err := NewSQLiteKVStore(location, blockSize, filesize)
+		if err != nil {
+			panic(err)
+		}
+		return h
 	case "bolt":
 		h, err := NewBoltDbShim(location, blockSize, filesize)
 		if err != nil {
@@ -101,6 +111,8 @@ func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize, substores,
 			creator = ExtentCreator
 		case "extentmmap":
 			creator = ExtentMmapCreator
+		case "sqlite":
+			creator = SQLiteCreator
 		case "bolt":
 			creator = BoltDbCreator
 		default:

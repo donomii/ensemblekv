@@ -132,6 +132,8 @@ func openStore(storeType, baseType, storeDir string) (ensemblekv.KvLike, error) 
 		baseCreator = ensemblekv.BoltDbCreator
 	case "json":
 		baseCreator = ensemblekv.JsonKVCreator
+	case "sqlite":
+		baseCreator = ensemblekv.SQLiteCreator
 	default:
 		return nil, fmt.Errorf("unknown base store type: %s", baseType)
 	}
@@ -148,6 +150,8 @@ func openStore(storeType, baseType, storeDir string) (ensemblekv.KvLike, error) 
 		return ensemblekv.BoltDbCreator(storeDir, blockSize, fileSize)
 	case "json":
 		return ensemblekv.JsonKVCreator(storeDir, blockSize, fileSize)
+	case "sqlite":
+		return ensemblekv.SQLiteCreator(storeDir, blockSize, fileSize)
 	case "ensemble":
 		return ensemblekv.EnsembleCreator(storeDir, blockSize, fileSize, baseCreator)
 	case "tree":

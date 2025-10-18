@@ -334,6 +334,7 @@ var baseStores = []struct {
 	// {"Pudge", PudgeCreator},
 	{"JsonKV", JsonKVCreator},
 	{"SingleFile", SingleFileKVCreator},
+	{"SQLite", SQLiteCreator},
 }
 
 // Store wrapper types

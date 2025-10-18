@@ -69,6 +69,7 @@ var StoreCreators = []StoreCreator{
 	{"BoltDB", BoltDbCreator},
 	{"ExtentKV", ExtentCreator},
 	{"ExtentMmapKV", ExtentMmapCreator},
+	{"SQLiteKV", SQLiteCreator},
 	StoreCreator{"SingleFileKV", SingleFileKVCreator},
 	//{"Pudge", PudgeCreator},
 	{"JsonKV", JsonKVCreator},
@@ -91,6 +92,9 @@ var StoreCreators = []StoreCreator{
 	{"EnsembleExtentMmap", func(d string, b, c int64) (KvLike, error) {
 		return EnsembleCreator(d, b, testFileCapacity, ExtentMmapCreator)
 	}},
+	{"EnsembleSQLite", func(d string, b, c int64) (KvLike, error) {
+		return EnsembleCreator(d, b, testFileCapacity, SQLiteCreator)
+	}},
 	{"TreeLSMBolt", func(d string, b, c int64) (KvLike, error) {
 		return NewTreeLSM(d, b, testFileCapacity, 0, BoltDbCreator)
 	}},
@@ -100,6 +104,9 @@ var StoreCreators = []StoreCreator{
 	{"TreeLSMExtentMmap", func(d string, b, c int64) (KvLike, error) {
 		return NewTreeLSM(d, b, testFileCapacity, 0, ExtentMmapCreator)
 	}},
+	{"TreeLSMSQLite", func(d string, b, c int64) (KvLike, error) {
+		return NewTreeLSM(d, b, testFileCapacity, 0, SQLiteCreator)
+	}},
 	{"StarLSMBolt", func(d string, b, c int64) (KvLike, error) {
 		return NewStarLSM(d, b, testFileCapacity, BoltDbCreator)
 	}},
@@ -108,6 +115,9 @@ var StoreCreators = []StoreCreator{
 	}},
 	{"StarLSMExtentMmap", func(d string, b, c int64) (KvLike, error) {
 		return NewStarLSM(d, b, testFileCapacity, ExtentMmapCreator)
+	}},
+	{"StarLSMSQLite", func(d string, b, c int64) (KvLike, error) {
+		return NewStarLSM(d, b, testFileCapacity, SQLiteCreator)
 	}},
 }
 
