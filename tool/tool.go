@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -121,12 +120,14 @@ func main() {
 
 // openStore creates the appropriate store based on command-line arguments
 func openStore(storeType, baseType, storeDir string) (ensemblekv.KvLike, error) {
-	var baseCreator func(string, int) (ensemblekv.KvLike, error)
+	var baseCreator ensemblekv.CreatorFunc
 
 	// Determine base store creator
 	switch strings.ToLower(baseType) {
 	case "extent":
 		baseCreator = ensemblekv.ExtentCreator
+	case "extentmmap":
+		baseCreator = ensemblekv.ExtentMmapCreator
 	case "bolt":
 		baseCreator = ensemblekv.BoltDbCreator
 	case "json":
@@ -136,22 +137,25 @@ func openStore(storeType, baseType, storeDir string) (ensemblekv.KvLike, error) 
 	}
 
 	// Create the appropriate store type
-	blockSize := 4096 // Default block size
+	blockSize := int64(4096) // Default block size
+	fileSize := int64(1024 * 1024 * 1024)
 	switch strings.ToLower(storeType) {
 	case "extent":
-		return ensemblekv.ExtentCreator(storeDir, blockSize)
+		return ensemblekv.ExtentCreator(storeDir, blockSize, fileSize)
+	case "extentmmap":
+		return ensemblekv.ExtentMmapCreator(storeDir, blockSize, fileSize)
 	case "bolt":
-		return ensemblekv.BoltDbCreator(storeDir, blockSize)
+		return ensemblekv.BoltDbCreator(storeDir, blockSize, fileSize)
 	case "json":
-		return ensemblekv.JsonKVCreator(storeDir, blockSize)
+		return ensemblekv.JsonKVCreator(storeDir, blockSize, fileSize)
 	case "ensemble":
-		return ensemblekv.EnsembleCreator(storeDir, blockSize, baseCreator)
+		return ensemblekv.EnsembleCreator(storeDir, blockSize, fileSize, baseCreator)
 	case "tree":
-		return ensemblekv.NewTreeLSM(storeDir, blockSize, baseCreator)
+		return ensemblekv.NewTreeLSM(storeDir, blockSize, fileSize, 0, baseCreator)
 	case "star":
-		return ensemblekv.NewStarLSM(storeDir, blockSize, baseCreator)
+		return ensemblekv.NewStarLSM(storeDir, blockSize, fileSize, baseCreator)
 	case "line":
-		return ensemblekv.LineLSMCreator(storeDir, blockSize, baseCreator)
+		return ensemblekv.LineLSMCreator(storeDir, blockSize, fileSize, baseCreator)
 	default:
 		return nil, fmt.Errorf("unknown store type: %s", storeType)
 	}

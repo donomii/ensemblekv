@@ -2,22 +2,22 @@ package ensemblekv
 
 import (
 	"fmt"
-	"testing"
 	"math/rand"
-	"time"
 	"path/filepath"
+	"testing"
+	"time"
 )
 
 // BenchConfig holds configuration for benchmark runs
 type BenchConfig struct {
-	NumItems        int
-	MinKeySize      int
-	MaxKeySize      int
-	MinValueSize    int
-	MaxValueSize    int
-	ReadWriteRatio  float64  // ratio of reads to writes (0.7 = 70% reads)
-	BatchSize       int      // number of operations per batch
-	Seed           int64    // random seed for reproducibility
+	NumItems       int
+	MinKeySize     int
+	MaxKeySize     int
+	MinValueSize   int
+	MaxValueSize   int
+	ReadWriteRatio float64 // ratio of reads to writes (0.7 = 70% reads)
+	BatchSize      int     // number of operations per batch
+	Seed           int64   // random seed for reproducibility
 }
 
 // Default benchmark configurations
@@ -32,7 +32,7 @@ var (
 		BatchSize:      100,
 		Seed:           42,
 	}
-	
+
 	MediumDataset = &BenchConfig{
 		NumItems:       100_000,
 		MinKeySize:     16,
@@ -43,7 +43,7 @@ var (
 		BatchSize:      1000,
 		Seed:           42,
 	}
-	
+
 	LargeDataset = &BenchConfig{
 		NumItems:       1_000_000,
 		MinKeySize:     16,
@@ -58,8 +58,8 @@ var (
 
 // StoreCreator is a function type that creates a KvLike store
 type StoreCreator struct {
-	Name     string
-	Creator  CreatorFunc
+	Name    string
+	Creator CreatorFunc
 }
 
 var testFileCapacity int64 = 12000000000 // 100MB
@@ -68,38 +68,47 @@ var testFileCapacity int64 = 12000000000 // 100MB
 var StoreCreators = []StoreCreator{
 	{"BoltDB", BoltDbCreator},
 	{"ExtentKV", ExtentCreator},
+	{"ExtentMmapKV", ExtentMmapCreator},
 	StoreCreator{"SingleFileKV", SingleFileKVCreator},
 	//{"Pudge", PudgeCreator},
 	{"JsonKV", JsonKVCreator},
-	{"EnsembleJsonKV", func(d string, b , c int64) (KvLike, error) {
+	{"EnsembleJsonKV", func(d string, b, c int64) (KvLike, error) {
 		return EnsembleCreator(d, b, testFileCapacity, JsonKVCreator)
 	}},
-	{"TreeLSMJsonKV", func(d string, b , c int64) (KvLike, error) {
-		return NewTreeLSM(d, b, testFileCapacity,0,JsonKVCreator)
+	{"TreeLSMJsonKV", func(d string, b, c int64) (KvLike, error) {
+		return NewTreeLSM(d, b, testFileCapacity, 0, JsonKVCreator)
 	}},
-	{"StarLSMJsonKV", func(d string, b , c int64) (KvLike, error) {
-		return NewStarLSM(d, b, testFileCapacity,JsonKVCreator)
-	}},
-
-	{"EnsembleBolt", func(d string, b , c int64) (KvLike, error) {
-		return EnsembleCreator(d, b, testFileCapacity,BoltDbCreator)
-	}},
-	{"EnsembleExtent", func(d string, b , c int64) (KvLike, error) {
-		return EnsembleCreator(d, b, testFileCapacity,ExtentCreator)
-	}},
-	{"TreeLSMBolt", func(d string, b , c int64) (KvLike, error) {
-		return NewTreeLSM(d, b,testFileCapacity,0,BoltDbCreator)
-	}},
-	{"TreeLSMExtent", func(d string, b , c int64) (KvLike, error) {
-		return NewTreeLSM(d, b, testFileCapacity,0,ExtentCreator)
-	}},
-	{"StarLSMBolt", func(d string, b , c int64) (KvLike, error) {
-		return NewStarLSM(d, b, testFileCapacity,BoltDbCreator)
-	}},
-	{"StarLSMExtent", func(d string, b , c int64) (KvLike, error) {
-		return NewStarLSM(d, b, testFileCapacity,ExtentCreator)
+	{"StarLSMJsonKV", func(d string, b, c int64) (KvLike, error) {
+		return NewStarLSM(d, b, testFileCapacity, JsonKVCreator)
 	}},
 
+	{"EnsembleBolt", func(d string, b, c int64) (KvLike, error) {
+		return EnsembleCreator(d, b, testFileCapacity, BoltDbCreator)
+	}},
+	{"EnsembleExtent", func(d string, b, c int64) (KvLike, error) {
+		return EnsembleCreator(d, b, testFileCapacity, ExtentCreator)
+	}},
+	{"EnsembleExtentMmap", func(d string, b, c int64) (KvLike, error) {
+		return EnsembleCreator(d, b, testFileCapacity, ExtentMmapCreator)
+	}},
+	{"TreeLSMBolt", func(d string, b, c int64) (KvLike, error) {
+		return NewTreeLSM(d, b, testFileCapacity, 0, BoltDbCreator)
+	}},
+	{"TreeLSMExtent", func(d string, b, c int64) (KvLike, error) {
+		return NewTreeLSM(d, b, testFileCapacity, 0, ExtentCreator)
+	}},
+	{"TreeLSMExtentMmap", func(d string, b, c int64) (KvLike, error) {
+		return NewTreeLSM(d, b, testFileCapacity, 0, ExtentMmapCreator)
+	}},
+	{"StarLSMBolt", func(d string, b, c int64) (KvLike, error) {
+		return NewStarLSM(d, b, testFileCapacity, BoltDbCreator)
+	}},
+	{"StarLSMExtent", func(d string, b, c int64) (KvLike, error) {
+		return NewStarLSM(d, b, testFileCapacity, ExtentCreator)
+	}},
+	{"StarLSMExtentMmap", func(d string, b, c int64) (KvLike, error) {
+		return NewStarLSM(d, b, testFileCapacity, ExtentMmapCreator)
+	}},
 }
 
 // BenchmarkResult holds the results of a benchmark run
@@ -127,21 +136,21 @@ func (r *BenchmarkResult) String() string {
 // runBenchmark executes a single benchmark configuration
 func runBenchmark(b *testing.B, creator StoreCreator, config *BenchConfig) *BenchmarkResult {
 	b.Helper()
-	
+
 	// Create temporary directory for the store
 	dir := b.TempDir()
 	storePath := filepath.Join(dir, "store")
-	
+
 	// Initialize store
 	store, err := creator.Creator(storePath, 4096, testFileCapacity) // 4KB block size
 	if err != nil {
 		b.Fatalf("Failed to create store %s: %v", creator.Name, err)
 	}
 	defer store.Close()
-	
+
 	// Initialize random number generator
 	rand.Seed(config.Seed)
-	
+
 	// Pre-generate test data
 	keys := make([][]byte, config.NumItems)
 	values := make([][]byte, config.NumItems)
@@ -149,21 +158,21 @@ func runBenchmark(b *testing.B, creator StoreCreator, config *BenchConfig) *Benc
 		keys[i] = randomBytes(config.MinKeySize, config.MaxKeySize)
 		values[i] = randomBytes(config.MinValueSize, config.MaxValueSize)
 	}
-	
+
 	// Populate initial data
 	errors := 0
 	start := time.Now()
-	
+
 	for i := 0; i < config.NumItems; i++ {
 		if err := store.Put(keys[i], values[i]); err != nil {
 			errors++
 		}
 	}
-	
+
 	// Run mixed workload
 	operations := 0
 	b.ResetTimer()
-	
+
 	for i := 0; i < config.BatchSize; i++ {
 		// Determine operation based on read/write ratio
 		if rand.Float64() < config.ReadWriteRatio {
@@ -183,10 +192,10 @@ func runBenchmark(b *testing.B, creator StoreCreator, config *BenchConfig) *Benc
 		}
 		operations++
 	}
-	
+
 	duration := time.Since(start)
 	opsPerSecond := float64(operations) / duration.Seconds()
-	
+
 	return &BenchmarkResult{
 		StoreName:    creator.Name,
 		Dataset:      fmt.Sprintf("%dK", config.NumItems/1000),
@@ -200,14 +209,14 @@ func runBenchmark(b *testing.B, creator StoreCreator, config *BenchConfig) *Benc
 // Benchmark functions for different dataset sizes
 func BenchmarkStoresSmall(b *testing.B) {
 	var results []*BenchmarkResult
-	
+
 	for _, creator := range StoreCreators {
 		b.Run(creator.Name, func(b *testing.B) {
 			result := runBenchmark(b, creator, SmallDataset)
 			results = append(results, result)
 		})
 	}
-	
+
 	// Print results table
 	b.Log("\nSmall Dataset Results (10K items):")
 	for _, r := range results {
@@ -217,14 +226,14 @@ func BenchmarkStoresSmall(b *testing.B) {
 
 func BenchmarkStoresMedium(b *testing.B) {
 	var results []*BenchmarkResult
-	
+
 	for _, creator := range StoreCreators {
 		b.Run(creator.Name, func(b *testing.B) {
 			result := runBenchmark(b, creator, MediumDataset)
 			results = append(results, result)
 		})
 	}
-	
+
 	b.Log("\nMedium Dataset Results (100K items):")
 	for _, r := range results {
 		b.Log(r)
@@ -233,14 +242,14 @@ func BenchmarkStoresMedium(b *testing.B) {
 
 func BenchmarkStoresLarge(b *testing.B) {
 	var results []*BenchmarkResult
-	
+
 	for _, creator := range StoreCreators {
 		b.Run(creator.Name, func(b *testing.B) {
 			result := runBenchmark(b, creator, LargeDataset)
 			results = append(results, result)
 		})
 	}
-	
+
 	b.Log("\nLarge Dataset Results (1M items):")
 	for _, r := range results {
 		b.Log(r)
@@ -258,18 +267,18 @@ func BenchmarkSequentialWrites(b *testing.B) {
 		MinValueSize: 1024,
 		MaxValueSize: 1024,
 		BatchSize:    100_000,
-		Seed:        42,
+		Seed:         42,
 	}
-	
+
 	var results []*BenchmarkResult
-	
+
 	for _, creator := range StoreCreators {
 		b.Run(creator.Name, func(b *testing.B) {
 			result := runBenchmark(b, creator, config)
 			results = append(results, result)
 		})
 	}
-	
+
 	b.Log("\nSequential Write Results:")
 	for _, r := range results {
 		b.Log(r)
@@ -288,16 +297,16 @@ func BenchmarkRandomReads(b *testing.B) {
 		BatchSize:      100_000,
 		Seed:           42,
 	}
-	
+
 	var results []*BenchmarkResult
-	
+
 	for _, creator := range StoreCreators {
 		b.Run(creator.Name, func(b *testing.B) {
 			result := runBenchmark(b, creator, config)
 			results = append(results, result)
 		})
 	}
-	
+
 	b.Log("\nRandom Read Results:")
 	for _, r := range results {
 		b.Log(r)
@@ -316,15 +325,15 @@ func BenchmarkHotspotAccess(b *testing.B) {
 		BatchSize:      100_000,
 		Seed:           42,
 	}
-	
+
 	var results []*BenchmarkResult
-	
+
 	// Modify the benchmark to focus on a small subset of keys
 	hotspotKeys := make([][]byte, 100)
 	for i := range hotspotKeys {
 		hotspotKeys[i] = randomBytes(16, 16)
 	}
-	
+
 	for _, creator := range StoreCreators {
 		b.Run(creator.Name, func(b *testing.B) {
 			dir := b.TempDir()
@@ -333,18 +342,18 @@ func BenchmarkHotspotAccess(b *testing.B) {
 				b.Fatalf("Failed to create store: %v", err)
 			}
 			defer store.Close()
-			
+
 			// Insert hot spot keys
 			for _, key := range hotspotKeys {
 				if err := store.Put(key, randomBytes(1024, 1024)); err != nil {
 					b.Fatalf("Failed to insert hot spot key: %v", err)
 				}
 			}
-			
+
 			start := time.Now()
 			errors := 0
 			operations := 0
-			
+
 			// Run hot spot access pattern
 			for i := 0; i < config.BatchSize; i++ {
 				key := hotspotKeys[rand.Intn(len(hotspotKeys))]
@@ -361,19 +370,19 @@ func BenchmarkHotspotAccess(b *testing.B) {
 				}
 				operations++
 			}
-			
+
 			duration := time.Since(start)
 			results = append(results, &BenchmarkResult{
 				StoreName:    creator.Name,
-				Dataset:     "HotSpot",
-				Operations:  operations,
-				Duration:    duration,
+				Dataset:      "HotSpot",
+				Operations:   operations,
+				Duration:     duration,
 				OpsPerSecond: float64(operations) / duration.Seconds(),
-				Errors:      errors,
+				Errors:       errors,
 			})
 		})
 	}
-	
+
 	b.Log("\nHot Spot Access Results:")
 	for _, r := range results {
 		b.Log(r)

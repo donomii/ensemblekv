@@ -26,6 +26,10 @@ func ExtentCreator(directory string, blockSize, fileSize int64) (KvLike, error) 
 	return NewExtentKeyValueStore(directory, blockSize, fileSize)
 }
 
+func ExtentMmapCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
+	return NewExtentMmapKeyValueStore(directory, blockSize, fileSize)
+}
+
 func SingleFileKVCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
 	store := NewSingleFileKVStore(directory+"/singlefilekv", blockSize, int64(fileSize))
 	return store, nil
@@ -67,6 +71,12 @@ func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize, substores,
 		}
 
 		return h
+	case "extentmmap":
+		h, err := NewExtentMmapKeyValueStore(location, blockSize, filesize)
+		if err != nil {
+			panic(err)
+		}
+		return h
 	case "bolt":
 		h, err := NewBoltDbShim(location, blockSize, filesize)
 		if err != nil {
@@ -89,6 +99,8 @@ func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize, substores,
 			creator = NuDbCreator
 		case "extent":
 			creator = ExtentCreator
+		case "extentmmap":
+			creator = ExtentMmapCreator
 		case "bolt":
 			creator = BoltDbCreator
 		default:

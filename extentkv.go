@@ -238,7 +238,7 @@ func (s *ExtentKeyValStore) maybePrintCacheStats() {
 
 func panicOnError(reason string, err error) {
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("%v:%v", reason, err))
 	}
 }
 
