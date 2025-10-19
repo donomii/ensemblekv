@@ -675,11 +675,6 @@ func (s *ExtentKeyValStore) Put(key, value []byte) error {
 	s.globalLock.Lock()
 	defer s.globalLock.Unlock()
 
-	if EnableIndexCaching {
-		s.cacheWrites++ // count this flush
-		s.ClearCache()
-	}
-
 	// Move to end of data file for values.
 	valuePos, err := s.valuesFile.Seek(0, 2)
 	panicOnError("Seek to end of values file", err)
@@ -740,6 +735,7 @@ func (s *ExtentKeyValStore) Put(key, value []byte) error {
 	checkLastIndexEntry(s.valuesIndex, s.valuesFile)
 	checkIndexSigns(s.keysIndex, s.valuesIndex)
 	if EnableIndexCaching {
+		s.cacheWrites++
 		s.cache.Store(string(key), true)
 	}
 	return nil

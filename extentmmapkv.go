@@ -697,11 +697,6 @@ func (s *ExtentMmapKeyValStore) Put(key, value []byte) error {
 	s.globalLock.Lock()
 	defer s.globalLock.Unlock()
 
-	if EnableIndexCaching {
-		s.cacheWrites++
-		s.ClearCache()
-	}
-
 	valuePos, err := s.valuesFile.Seek(0, io.SeekEnd)
 	panicOnError("Seek to end of values file", err)
 	valueSize, err := s.valuesFile.Write(value)
