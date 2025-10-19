@@ -606,14 +606,23 @@ func (s *ExtentMmapKeyValStore) forwardScanForKey(key []byte) ([]byte, error) {
 
 	found, offset, err := s.searchDbForKeyExists(key, s.keysIndex, s.keysFile, s.keysIndexCache)
 	if err != nil {
+		if EnableIndexCaching {
+			s.cache.Store(string(key), false)
+		}
 		return nil, fmt.Errorf("forwardScanForKey: not found: %v", err)
 	}
 
 	if !found {
+		if EnableIndexCaching {
+			s.cache.Store(string(key), false)
+		}
 		return nil, fmt.Errorf("forwardScanForKey: key not found or deleted")
 	}
 
 	if keysIndexFileLength == offset {
+		if EnableIndexCaching {
+			s.cache.Store(string(key), false)
+		}
 		return nil, fmt.Errorf("forwardScanForKey: key not found or deleted because offset is at end of file")
 	}
 
@@ -623,6 +632,9 @@ func (s *ExtentMmapKeyValStore) forwardScanForKey(key []byte) ([]byte, error) {
 		return nil, fmt.Errorf("forwardScanForKey: failed to read value: %v", err)
 	}
 
+	if EnableIndexCaching {
+		s.cache.Store(string(key), true)
+	}
 	return value, nil
 }
 
@@ -770,9 +782,6 @@ func (s *ExtentMmapKeyValStore) Get(key []byte) ([]byte, error) {
 		return nil, fmt.Errorf("Get: %w", err)
 	}
 
-	if EnableIndexCaching {
-		s.cache.Store(string(key), true)
-	}
 	return val, nil
 }
 
