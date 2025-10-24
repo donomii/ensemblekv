@@ -839,8 +839,14 @@ func (s *ExtentMmapKeyValStore) readDataAtIndexPos(indexPosition int64, indexFil
 		nextDataPos = -nextDataPos
 	}
 
+	// CRASH RECOVERY FIX: Validate bounds before attempting to read
+	// If nextDataPos exceeds file length, this indicates corruption from incomplete write/crash
+	// Instead of panicking, skip this entry gracefully to allow database to continue operating
 	if nextDataPos > dataFileLength {
-		return nil, false, fmt.Errorf("invalid next data position %v for datafile of length %v", nextDataPos, dataFileLength)
+		debugf("WARNING: Corrupt index detected - nextDataPos=%d exceeds dataFileLength=%d at indexPosition=%d. Treating as deleted entry.\n",
+			nextDataPos, dataFileLength, indexPosition)
+		// Return empty data with deleted flag to skip this entry gracefully
+		return nil, true, nil
 	}
 
 	size := nextDataPos - dataPos
