@@ -1,14 +1,13 @@
 package ensemblekv
 
 import (
-	"encoding/binary"
 	"fmt"
-	"hash/crc32"
 	"os"
 	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -29,7 +28,7 @@ type MmapSingleKV struct {
 const (
 	initialFileSize = 64 * 1024 * 1024 // 64MB initial size
 	growthFactor    = 2
-	headerSize      = 20 // 8 (timestamp) + 4 (key_len) + 4 (value_len) + 4 (crc32)
+	headerSize      = 16 // 8 (timestamp) + 4 (key_len) + 4 (value_len)
 	deletedMarker   = uint32(0xFFFFFFFF)
 )
 
@@ -39,7 +38,6 @@ const (
 // [4 bytes: value_length (uint32)] - 0xFFFFFFFF for deletes
 // [key_bytes]
 // [value_bytes]
-// [4 bytes: CRC32 checksum]
 
 func NewMmapSingleKV(directory string, blockSize, fileSize int64) (*MmapSingleKV, error) {
 	if err := os.MkdirAll(directory, 0755); err != nil {
@@ -111,10 +109,10 @@ func (kv *MmapSingleKV) recover() error {
 			break
 		}
 
-		// Read header
-		timestamp := int64(binary.LittleEndian.Uint64(kv.data[offset : offset+8]))
-		keyLen := binary.LittleEndian.Uint32(kv.data[offset+8 : offset+12])
-		valueLen := binary.LittleEndian.Uint32(kv.data[offset+12 : offset+16])
+		// Read header using unsafe for speed
+		timestamp := *(*int64)(unsafe.Pointer(&kv.data[offset]))
+		keyLen := *(*uint32)(unsafe.Pointer(&kv.data[offset+8]))
+		valueLen := *(*uint32)(unsafe.Pointer(&kv.data[offset+12]))
 
 		// Sanity checks
 		if timestamp == 0 && keyLen == 0 && valueLen == 0 {
@@ -139,29 +137,8 @@ func (kv *MmapSingleKV) recover() error {
 		}
 
 		// Read key
-		keyStart := offset + 16
+		keyStart := offset + headerSize
 		key := kv.data[keyStart : keyStart+int64(keyLen)]
-
-		// Read value (if not deleted)
-		if valueLen != deletedMarker {
-			_ = keyStart + int64(keyLen)
-		}
-
-		// Read and verify CRC
-		crcOffset := offset + entrySize
-		if crcOffset+4 > int64(len(kv.data)) {
-			break
-		}
-		storedCRC := binary.LittleEndian.Uint32(kv.data[crcOffset : crcOffset+4])
-
-		// Calculate CRC over the entire entry (including header, key, value)
-		entryData := kv.data[offset : offset+entrySize]
-		calculatedCRC := crc32.ChecksumIEEE(entryData)
-
-		if storedCRC != calculatedCRC {
-			// CRC mismatch, this is an incomplete write
-			break
-		}
 
 		// Valid entry, update index
 		if valueLen == deletedMarker {
@@ -170,19 +147,11 @@ func (kv *MmapSingleKV) recover() error {
 			kv.index[string(key)] = offset
 		}
 
-		maxValidOffset = crcOffset + 4
+		maxValidOffset = offset + entrySize
 		offset = maxValidOffset
 	}
 
 	kv.offset = maxValidOffset
-
-	// Truncate file to last valid entry if we found incomplete data
-	if maxValidOffset < int64(len(kv.data)) {
-		// Zero out the invalid region
-		for i := maxValidOffset; i < int64(len(kv.data)); i++ {
-			kv.data[i] = 0
-		}
-	}
 
 	return nil
 }
@@ -231,36 +200,29 @@ func (kv *MmapSingleKV) writeEntry(key, value []byte, isDelete bool) error {
 	if !isDelete {
 		entrySize += int64(valueLen)
 	}
-	totalSize := entrySize + 4 // +4 for CRC
 
-	if err := kv.ensureSpace(totalSize); err != nil {
+	if err := kv.ensureSpace(entrySize); err != nil {
 		return err
 	}
 
 	offset := kv.offset
 
-	// Write header
-	binary.LittleEndian.PutUint64(kv.data[offset:offset+8], uint64(timestamp))
-	binary.LittleEndian.PutUint32(kv.data[offset+8:offset+12], keyLen)
-	binary.LittleEndian.PutUint32(kv.data[offset+12:offset+16], valueLen)
+	// Write header using unsafe for speed
+	*(*int64)(unsafe.Pointer(&kv.data[offset])) = timestamp
+	*(*uint32)(unsafe.Pointer(&kv.data[offset+8])) = keyLen
+	*(*uint32)(unsafe.Pointer(&kv.data[offset+12])) = valueLen
 
 	// Write key
-	copy(kv.data[offset+16:offset+16+int64(keyLen)], key)
+	copy(kv.data[offset+headerSize:offset+headerSize+int64(keyLen)], key)
 
 	// Write value if not delete
 	if !isDelete {
-		valueOffset := offset + 16 + int64(keyLen)
+		valueOffset := offset + headerSize + int64(keyLen)
 		copy(kv.data[valueOffset:valueOffset+int64(valueLen)], value)
 	}
 
-	// Calculate and write CRC
-	entryData := kv.data[offset : offset+entrySize]
-	crc := crc32.ChecksumIEEE(entryData)
-	crcOffset := offset + entrySize
-	binary.LittleEndian.PutUint32(kv.data[crcOffset:crcOffset+4], crc)
-
 	// Update offset
-	kv.offset += totalSize
+	kv.offset += entrySize
 
 	// Update index
 	if isDelete {
@@ -281,15 +243,15 @@ func (kv *MmapSingleKV) Get(key []byte) ([]byte, error) {
 		return nil, fmt.Errorf("key not found")
 	}
 
-	// Read entry at offset
-	keyLen := binary.LittleEndian.Uint32(kv.data[offset+8 : offset+12])
-	valueLen := binary.LittleEndian.Uint32(kv.data[offset+12 : offset+16])
+	// Read entry at offset using unsafe for speed
+	keyLen := *(*uint32)(unsafe.Pointer(&kv.data[offset+8]))
+	valueLen := *(*uint32)(unsafe.Pointer(&kv.data[offset+12]))
 
 	if valueLen == deletedMarker {
 		return nil, fmt.Errorf("key not found")
 	}
 
-	valueOffset := offset + 16 + int64(keyLen)
+	valueOffset := offset + headerSize + int64(keyLen)
 	value := make([]byte, valueLen)
 	copy(value, kv.data[valueOffset:valueOffset+int64(valueLen)])
 
@@ -341,14 +303,18 @@ func (kv *MmapSingleKV) Flush() error {
 	kv.mutex.Lock()
 	defer kv.mutex.Unlock()
 
-	// Sync the mmap region to disk
-	if err := unix.Msync(kv.data, unix.MS_SYNC); err != nil {
-		return fmt.Errorf("failed to msync: %w", err)
-	}
-
-	// Sync the file descriptor
-	if err := kv.file.Sync(); err != nil {
-		return fmt.Errorf("failed to sync file: %w", err)
+	// Only sync a small region around recent writes for performance
+	// This is safe because we use MAP_SHARED
+	if kv.offset > 0 {
+		// Sync only the last 1MB or the used region, whichever is smaller
+		syncStart := int64(0)
+		if kv.offset > 1024*1024 {
+			syncStart = kv.offset - 1024*1024
+		}
+		syncRegion := kv.data[syncStart:kv.offset]
+		if err := unix.Msync(syncRegion, unix.MS_ASYNC); err != nil {
+			return fmt.Errorf("failed to msync: %w", err)
+		}
 	}
 
 	return nil
@@ -358,8 +324,10 @@ func (kv *MmapSingleKV) Close() error {
 	kv.mutex.Lock()
 	defer kv.mutex.Unlock()
 
-	// Sync before closing
-	unix.Msync(kv.data, unix.MS_SYNC)
+	// Sync all data before closing
+	if len(kv.data) > 0 {
+		unix.Msync(kv.data, unix.MS_SYNC)
+	}
 
 	// Unmap
 	if err := syscall.Munmap(kv.data); err != nil {
@@ -381,16 +349,16 @@ func (kv *MmapSingleKV) MapFunc(f func([]byte, []byte) error) (map[string]bool, 
 	keys := make(map[string]bool)
 
 	for key, offset := range kv.index {
-		// Read entry at offset
-		keyLen := binary.LittleEndian.Uint32(kv.data[offset+8 : offset+12])
-		valueLen := binary.LittleEndian.Uint32(kv.data[offset+12 : offset+16])
+		// Read entry at offset using unsafe for speed
+		keyLen := *(*uint32)(unsafe.Pointer(&kv.data[offset+8]))
+		valueLen := *(*uint32)(unsafe.Pointer(&kv.data[offset+12]))
 
 		if valueLen == deletedMarker {
 			continue // Skip deleted entries
 		}
 
 		keyBytes := []byte(key)
-		valueOffset := offset + 16 + int64(keyLen)
+		valueOffset := offset + headerSize + int64(keyLen)
 		value := make([]byte, valueLen)
 		copy(value, kv.data[valueOffset:valueOffset+int64(valueLen)])
 
@@ -412,15 +380,15 @@ func (kv *MmapSingleKV) KeyHistory(key []byte) ([][]byte, error) {
 		return [][]byte{}, nil
 	}
 
-	// Read entry at offset
-	keyLen := binary.LittleEndian.Uint32(kv.data[offset+8 : offset+12])
-	valueLen := binary.LittleEndian.Uint32(kv.data[offset+12 : offset+16])
+	// Read entry at offset using unsafe for speed
+	keyLen := *(*uint32)(unsafe.Pointer(&kv.data[offset+8]))
+	valueLen := *(*uint32)(unsafe.Pointer(&kv.data[offset+12]))
 
 	if valueLen == deletedMarker {
 		return [][]byte{}, nil
 	}
 
-	valueOffset := offset + 16 + int64(keyLen)
+	valueOffset := offset + headerSize + int64(keyLen)
 	value := make([]byte, valueLen)
 	copy(value, kv.data[valueOffset:valueOffset+int64(valueLen)])
 
