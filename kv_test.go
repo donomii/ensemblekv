@@ -335,6 +335,7 @@ var baseStores = []struct {
 	{"JsonKV", JsonKVCreator},
 	//{"SingleFile", SingleFileKVCreator},
 	{"SQLite", SQLiteCreator},
+	{"MmapSingle", MmapSingleCreator},
 }
 
 // Store wrapper types

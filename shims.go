@@ -35,6 +35,10 @@ func SingleFileKVCreator(directory string, blockSize, fileSize int64) (KvLike, e
 	return store, nil
 }
 
+func MmapSingleCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
+	return NewMmapSingleKV(directory, blockSize, fileSize)
+}
+
 func SQLiteCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
 	return NewSQLiteKVStore(directory, blockSize, fileSize)
 }
@@ -99,6 +103,12 @@ func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize, substores,
 			panic(err)
 		}
 		return h
+	case "mmapsingle":
+		h, err := NewMmapSingleKV(location, blockSize, filesize)
+		if err != nil {
+			panic(err)
+		}
+		return h
 
 	case "ensemble":
 		var creator CreatorFunc
@@ -115,6 +125,8 @@ func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize, substores,
 			creator = SQLiteCreator
 		case "bolt":
 			creator = BoltDbCreator
+		case "mmapsingle":
+			creator = MmapSingleCreator
 		default:
 			panic("Unknown substore type: " + subtipe)
 		}
