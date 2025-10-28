@@ -1,6 +1,7 @@
 package ensemblekv
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -393,6 +394,19 @@ func (kv *MmapSingleKV) KeyHistory(key []byte) ([][]byte, error) {
 	copy(value, kv.data[valueOffset:valueOffset+int64(valueLen)])
 
 	return [][]byte{value}, nil
+}
+
+func (kv *MmapSingleKV) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
+	// MmapSingleKV doesn't have native prefix support, so filter through MapFunc
+	keys := make(map[string]bool)
+	_, err := kv.MapFunc(func(k, v []byte) error {
+		if bytes.HasPrefix(k, prefix) {
+			keys[string(k)] = true
+			return f(k, v)
+		}
+		return nil
+	})
+	return keys, err
 }
 
 // Helper function to get timestamp for entries

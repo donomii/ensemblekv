@@ -244,6 +244,39 @@ func (s *SQLiteKV) KeyHistory(key []byte) ([][]byte, error) {
 	return history, rows.Err()
 }
 
+func (s *SQLiteKV) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// SQLite supports LIKE operator for prefix matching
+	prefixStr := string(prefix) + "%"
+	rows, err := s.db.Query(`SELECT key, value FROM kv_store WHERE key LIKE ?`, prefixStr)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite prefix query: %w", err)
+	}
+	defer rows.Close()
+
+	visited := make(map[string]bool)
+
+	for rows.Next() {
+		var k string
+		var v []byte
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, fmt.Errorf("sqlite prefix scan: %w", err)
+		}
+		if err := f([]byte(k), v); err != nil {
+			return visited, err
+		}
+		visited[k] = true
+	}
+
+	if err := rows.Err(); err != nil {
+		return visited, fmt.Errorf("sqlite prefix rows: %w", err)
+	}
+
+	return visited, nil
+}
+
 func (s *SQLiteKV) withTx(fn func(*sql.Tx) error) error {
 	tx, err := s.db.Begin()
 	if err != nil {

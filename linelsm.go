@@ -487,3 +487,41 @@ func (l *Linelsm) KeyHistory(key []byte) ([][]byte, error) {
 	
 	return allHistory, nil
 }
+
+func (l *Linelsm) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
+	l.mutex.RLock()
+	defer l.mutex.RUnlock()
+
+	keys := make(map[string]bool)
+	
+	// Linelsm stores keys with data prefix "d:", so we need to handle this
+	dataPrefixedKey := append([]byte(dataPrefix), prefix...)
+	
+	// Check all tiers
+	for _, tier := range l.tiers {
+		for _, store := range tier {
+			subKeys, err := store.MapPrefixFunc(dataPrefixedKey, func(k, v []byte) error {
+				// Remove the data prefix to get original key
+				if len(k) > len(dataPrefix) {
+					originalKey := k[len(dataPrefix):]
+					keys[string(originalKey)] = true
+					return f(originalKey, v)
+				}
+				return nil
+			})
+			if err != nil {
+				return keys, err
+			}
+			// Merge sub keys (though we already processed them above)
+			for k, v := range subKeys {
+				// Remove data prefix for the key map
+				if strings.HasPrefix(k, dataPrefix) {
+					originalKey := strings.TrimPrefix(k, dataPrefix)
+					keys[originalKey] = v
+				}
+			}
+		}
+	}
+
+	return keys, nil
+}

@@ -408,3 +408,33 @@ func (t *TreeLSM) MapFunc(f func([]byte, []byte) error) (map[string]bool, error)
 
 	return visited, nil
 }
+
+func (t *TreeLSM) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
+	t.mutex.RLock()
+	defer t.mutex.RUnlock()
+
+	keys := make(map[string]bool)
+
+	// Start with current store
+	subKeys, err := t.currentStore.MapPrefixFunc(prefix, f)
+	if err != nil {
+		return keys, err
+	}
+	for k, v := range subKeys {
+		keys[k] = v
+	}
+
+	// Then process substores
+	for _, subStore := range t.subStores {
+		subKeys, err := subStore.MapPrefixFunc(prefix, f)
+		if err != nil {
+			return keys, err
+		}
+		// Merge visited maps
+		for k, v := range subKeys {
+			keys[k] = v
+		}
+	}
+
+	return keys, nil
+}

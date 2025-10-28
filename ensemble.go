@@ -401,3 +401,24 @@ func (s *EnsembleKv) Size() int64 {
 	}
 	return total
 }
+
+func (s *EnsembleKv) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	keys := make(map[string]bool)
+	
+	// Iterate over each substore and call MapPrefixFunc
+	for _, substore := range s.substores {
+		subKeys, err := substore.MapPrefixFunc(prefix, f)
+		if err != nil {
+			return keys, err
+		}
+		// Merge the keys from this substore
+		for k, v := range subKeys {
+			keys[k] = v
+		}
+	}
+
+	return keys, nil
+}

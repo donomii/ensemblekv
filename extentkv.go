@@ -204,6 +204,15 @@ func debugln(format string, args ...interface{}) {
 
 }
 
+// trimTo40 truncates a byte slice to 40 characters for display purposes
+func trimTo40(data []byte) string {
+	s := string(data)
+	if len(s) > 40 {
+		return s[:40] + "..."
+	}
+	return s
+}
+
 // --- Add these new fields to ExtentKeyValStore struct:
 type ExtentKeyValStore struct {
 	DefaultOps
@@ -1340,4 +1349,17 @@ func (s *ExtentKeyValStore) LockFreeGet(key []byte) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+func (s *ExtentKeyValStore) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
+	// ExtentKeyValStore doesn't have native prefix support, so filter through MapFunc
+	keys := make(map[string]bool)
+	_, err := s.MapFunc(func(k, v []byte) error {
+		if bytes.HasPrefix(k, prefix) {
+			keys[string(k)] = true
+			return f(k, v)
+		}
+		return nil
+	})
+	return keys, err
 }

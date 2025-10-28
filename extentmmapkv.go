@@ -1266,3 +1266,16 @@ func (s *ExtentMmapKeyValStore) LockFreeGet(key []byte) ([]byte, error) {
 
 	return data, nil
 }
+
+func (s *ExtentMmapKeyValStore) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
+	// ExtentMmapKeyValStore doesn't have native prefix support, so filter through MapFunc
+	keys := make(map[string]bool)
+	_, err := s.MapFunc(func(k, v []byte) error {
+		if bytes.HasPrefix(k, prefix) {
+			keys[string(k)] = true
+			return f(k, v)
+		}
+		return nil
+	})
+	return keys, err
+}

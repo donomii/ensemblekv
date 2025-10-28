@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -155,4 +156,22 @@ func (s *JsonKV) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) 
 		}
 	}
 	return visited, nil
+}
+
+func (s *JsonKV) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	keys := make(map[string]bool)
+	prefixStr := string(prefix)
+
+	for k, v := range s.data {
+		if strings.HasPrefix(k, prefixStr) {
+			keys[k] = true
+			if err := f([]byte(k), v); err != nil {
+				return keys, err
+			}
+		}
+	}
+	return keys, nil
 }

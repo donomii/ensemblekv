@@ -365,3 +365,33 @@ func (s *StarLSM) MapFunc(f func([]byte, []byte) error) (map[string]bool, error)
 
 	return visited, nil
 }
+
+func (s *StarLSM) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	keys := make(map[string]bool)
+
+	// Start with current store
+	subKeys, err := s.currentStore.MapPrefixFunc(prefix, f)
+	if err != nil {
+		return keys, err
+	}
+	for k, v := range subKeys {
+		keys[k] = v
+	}
+
+	// Then process substores
+	for _, subStore := range s.subStores {
+		subKeys, err := subStore.MapPrefixFunc(prefix, f)
+		if err != nil {
+			return keys, err
+		}
+		// Merge visited maps
+		for k, v := range subKeys {
+			keys[k] = v
+		}
+	}
+
+	return keys, nil
+}

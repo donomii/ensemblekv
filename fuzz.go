@@ -2,7 +2,6 @@ package ensemblekv
 
 import (
 	"bytes"
-	"encoding/hex"
 	"fmt"
 	"math/rand"
 	"testing"
@@ -39,14 +38,6 @@ func randomBytes(minSize, maxSize int) []byte {
 	data := make([]byte, size)
 	rand.Read(data)
 	return data
-}
-
-// Helper function to trim byte slices for display
-func trimTo40(data []byte) string {
-	if len(data) > 40 {
-		return fmt.Sprintf("%s...", hex.EncodeToString(data[:40]))
-	}
-	return hex.EncodeToString(data)
 }
 
 // LogEntry holds information about each operation

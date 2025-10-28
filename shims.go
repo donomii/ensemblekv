@@ -251,6 +251,23 @@ func (s *nuDbShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, error
 	panic("lol")
 }
 
+func (s *nuDbShim) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
+	// NuDb doesn't support native prefix search, so filter through MapFunc
+	keys := make(map[string]bool)
+	_, err := s.MapFunc(func(k, v []byte) error {
+		if bytes.HasPrefix(k, prefix) {
+			keys[string(k)] = true
+			return f(k, v)
+		}
+		return nil
+	})
+	if err != nil {
+		return keys, err
+	}
+	// Return only the keys that matched the prefix
+	return keys, nil
+}
+
 type BoltDbShim struct {
 	DefaultOps
 	directory  string
@@ -412,6 +429,23 @@ func (s *BoltDbShim) Size() int64 {
 	return count
 }
 
+func (s *BoltDbShim) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
+	keys := make(map[string]bool)
+	err := s.boltHandle.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("Blocks"))
+		c := b.Cursor()
+		// Use BoltDB's native prefix search
+		for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
+			keys[string(k)] = true
+			if err := f(k, v); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return keys, err
+}
+
 type PudgeShim struct {
 	DefaultOps
 	filename string
@@ -542,6 +576,19 @@ func (s *PudgeShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, erro
 	return visited, nil
 }
 
+func (s *PudgeShim) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
+	// Pudge doesn't support native prefix search, so filter through MapFunc
+	keys := make(map[string]bool)
+	_, err := s.MapFunc(func(k, v []byte) error {
+		if bytes.HasPrefix(k, prefix) {
+			keys[string(k)] = true
+			return f(k, v)
+		}
+		return nil
+	})
+	return keys, err
+}
+
 // PudgeCreator is the creator function for PudgeShim
 func PudgeCreator(directory string, blockSize, filesize int64) (KvLike, error) {
 	return NewPudgeShim(directory, blockSize, filesize)
@@ -668,6 +715,51 @@ func (s *S3Shim) Size() int64 {
 	// S3 doesn't provide a direct way to count objects
 	// This is a placeholder implementation
 	return 0
+}
+
+func (s *S3Shim) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
+	keys := make(map[string]bool)
+
+	// Construct the S3 prefix by combining our base prefix with the search prefix
+	s3Prefix := s.prefix
+	if s.prefix != "" {
+		s3Prefix = s.prefix + "/" + string(prefix)
+	} else {
+		s3Prefix = string(prefix)
+	}
+
+	input := &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucketName),
+		Prefix: aws.String(s3Prefix),
+	}
+
+	err := s.client.ListObjectsV2Pages(input, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
+		for _, obj := range page.Contents {
+			keyStr := *obj.Key
+			key := []byte(keyStr)
+
+			// Remove our base prefix to get the actual key
+			if s.prefix != "" && len(keyStr) > len(s.prefix)+1 {
+				key = []byte(keyStr[len(s.prefix)+1:])
+			}
+
+			// Check if it still has the desired prefix after removing base prefix
+			if bytes.HasPrefix(key, prefix) {
+				val, err := s.Get(key)
+				if err != nil {
+					continue
+				}
+				keys[string(key)] = true
+				_ = f(key, val)
+			}
+		}
+		return true
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return keys, nil
 }
 
 // S3Creator is the creator function for S3Shim

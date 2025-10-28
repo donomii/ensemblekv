@@ -386,3 +386,16 @@ func readIndexEntry(f *os.File, pos int64) IndexEntry {
 	must(binary.Read(f, binary.BigEndian, &entry))
 	return entry
 }
+
+func (kv *KVStore) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
+	// Single file KV doesn't have native prefix support, so filter through MapFunc
+	keys := make(map[string]bool)
+	_, err := kv.MapFunc(func(k, v []byte) error {
+		if bytes.HasPrefix(k, prefix) {
+			keys[string(k)] = true
+			return f(k, v)
+		}
+		return nil
+	})
+	return keys, err
+}
