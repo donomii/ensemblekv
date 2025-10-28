@@ -16,16 +16,17 @@ import (
 // This is ensemblekv, a key-value store that uses multiple sub-stores to store data. It is designed to be used with large data sets that do not fit into other kv stores, while still being able to use the features of those kv stores.
 
 type KvLike interface {
-	Get(key []byte) ([]byte, error)		// Get retrieves a value for a given key.  If the key does not exist, it returns nil and an error.
-	Put(key []byte, val []byte) error	// Put stores a key-value pair.  If the key already exists, it overwrites the value.
-	Exists(key []byte) bool	// Exists checks if a key exists in the store.  Returns true if the key exists, false otherwise.
-	Delete(key []byte) error	// Delete removes a key-value pair from the store.  Behaviour might vary by store.
-	Size() int64	// Size returns the size, in bytes, used by the store.
-	Flush() error	// Flush ensures all data is written to disk.  Behaviour might vary by store.
-	Close() error	// Close closes the store and releases any resources.  The store becomes unusable after this call.
-	MapFunc(f func([]byte, []byte) error) (map[string]bool, error) // MapFunc applies a function to all key-value pairs in the store.  The function should return an error if it fails.  Some stores may call f multiple times for the same key, with each call being a different past value (usually caused by overwrites in an LSM store).  Returns a map of keys that were processed, where the value indicates if the key exists (true) or was deleted (false).
-	DumpIndex() error	// Prints the index to stdout, for debuggins
-	KeyHistory(key []byte) ([][]byte, error) // Returns array of all keys
+	Get(key []byte) ([]byte, error)                                                     // Get retrieves a value for a given key.  If the key does not exist, it returns nil and an error.
+	Put(key []byte, val []byte) error                                                   // Put stores a key-value pair.  If the key already exists, it overwrites the value.
+	Exists(key []byte) bool                                                             // Exists checks if a key exists in the store.  Returns true if the key exists, false otherwise.
+	Delete(key []byte) error                                                            // Delete removes a key-value pair from the store.  Behaviour might vary by store.
+	Size() int64                                                                        // Size returns the size, in bytes, used by the store.
+	Flush() error                                                                       // Flush ensures all data is written to disk.  Behaviour might vary by store.
+	Close() error                                                                       // Close closes the store and releases any resources.  The store becomes unusable after this call.
+	MapFunc(f func([]byte, []byte) error) (map[string]bool, error)                      // MapFunc applies a function to all key-value pairs in the store.  The function should return an error if it fails.  Some stores may call f multiple times for the same key, with each call being a different past value (usually caused by overwrites in an LSM store).  Returns a map of keys that were processed, where the value indicates if the key exists (true) or was deleted (false).
+	MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) // MapPrefixFunc applies a function to all key-value pairs in the store that have a given prefix.  The function should return an error if it fails.  Some stores may call f multiple times for the same key, with each call being a different past value (usually caused by overwrites in an LSM store).  Returns a map of keys that were processed, where the value indicates if the key exists (true) or was deleted (false).
+	DumpIndex() error                                                                   // Prints the index to stdout, for debuggins
+	KeyHistory(key []byte) ([][]byte, error)                                            // Returns array of all keys
 }
 
 type DefaultOps struct {
@@ -67,7 +68,7 @@ func NewEnsembleKv(directory string, N, maxBlock, maxKeys, filesie int64, create
 		maxKeys:     maxKeys,
 		createStore: createStore,
 		hashFunc:    defaultHashFunc,
-		filesize:   filesie,
+		filesize:    filesie,
 	}
 
 	if err := os.MkdirAll(directory, os.ModePerm); err != nil {
@@ -163,7 +164,6 @@ func (s *EnsembleKv) KeyHistory(key []byte) ([][]byte, error) {
 // Get retrieves a value for a given key from the appropriate substore.
 func (s *EnsembleKv) Get(key []byte) ([]byte, error) {
 
-
 	hash := s.hashFunc(key)
 	index := s.hashToIndex(hash)
 	//fmt.Printf("Getting key %v from substore %d\n", clampString(string(key), 100), index) //FIXME make debug log
@@ -181,7 +181,6 @@ func clampString(in string, length int) string {
 
 // Adjusted Put method to track the total number of keys and trigger rebalance if needed.
 func (s *EnsembleKv) Put(key []byte, val []byte) error {
-	
 
 	hash := s.hashFunc(key)
 	index := s.hashToIndex(hash)
