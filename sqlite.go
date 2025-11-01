@@ -26,14 +26,6 @@ const (
 		value BLOB NOT NULL,
 		updated_at INTEGER NOT NULL
 	)`
-	sqliteHistoryTable = `CREATE TABLE IF NOT EXISTS kv_history (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		key TEXT NOT NULL,
-		value BLOB,
-		action TEXT NOT NULL,
-		updated_at INTEGER NOT NULL
-	)`
-	sqliteHistoryIndex = `CREATE INDEX IF NOT EXISTS kv_history_key_idx ON kv_history(key, updated_at)`
 )
 
 // NewSQLiteKVStore creates a SQLite-backed key value store at the provided directory.
@@ -55,7 +47,7 @@ func NewSQLiteKVStore(directory string, blockSize, fileSize int64) (*SQLiteKV, e
 		return nil, fmt.Errorf("ping sqlite db: %w", err)
 	}
 
-	for _, stmt := range []string{sqliteMainTable, sqliteHistoryTable, sqliteHistoryIndex} {
+	for _, stmt := range []string{sqliteMainTable} {
 		if _, err := db.Exec(stmt); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("initialise sqlite schema: %w", err)
@@ -80,12 +72,6 @@ func (s *SQLiteKV) Put(key, value []byte) error {
 			string(key), value, now,
 		); err != nil {
 			return fmt.Errorf("sqlite put upsert: %w", err)
-		}
-
-		if _, err := tx.Exec(`INSERT INTO kv_history(key, value, action, updated_at) VALUES(?, ?, 'put', ?)`,
-			string(key), value, now,
-		); err != nil {
-			return fmt.Errorf("sqlite put history: %w", err)
 		}
 
 		return nil
@@ -124,7 +110,6 @@ func (s *SQLiteKV) Delete(key []byte) error {
 	defer s.mu.Unlock()
 
 	return s.withTx(func(tx *sql.Tx) error {
-		now := time.Now().UnixNano()
 
 		res, err := tx.Exec(`DELETE FROM kv_store WHERE key = ?`, string(key))
 		if err != nil {
@@ -132,12 +117,6 @@ func (s *SQLiteKV) Delete(key []byte) error {
 		}
 		if rows, _ := res.RowsAffected(); rows == 0 {
 			return fmt.Errorf("key not found")
-		}
-
-		if _, err := tx.Exec(`INSERT INTO kv_history(key, value, action, updated_at) VALUES(?, NULL, 'delete', ?)`,
-			string(key), now,
-		); err != nil {
-			return fmt.Errorf("sqlite delete history: %w", err)
 		}
 
 		return nil
@@ -224,24 +203,8 @@ func (s *SQLiteKV) Close() error {
 }
 
 func (s *SQLiteKV) KeyHistory(key []byte) ([][]byte, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT value FROM kv_history WHERE key = ? AND action = 'put' ORDER BY updated_at ASC`, string(key))
-	if err != nil {
-		return nil, fmt.Errorf("sqlite history query: %w", err)
-	}
-	defer rows.Close()
-
-	var history [][]byte
-	for rows.Next() {
-		var value []byte
-		if err := rows.Scan(&value); err != nil {
-			return nil, fmt.Errorf("sqlite history scan: %w", err)
-		}
-		history = append(history, append([]byte(nil), value...))
-	}
-	return history, rows.Err()
+	return nil, nil
 }
 
 func (s *SQLiteKV) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
