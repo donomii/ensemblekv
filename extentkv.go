@@ -68,7 +68,7 @@ of caching:
    - Controlled by the global flag `EnableIndexCaching`.
    - When enabled, the entire contents of *keys.index* and *values.index* are read into memory (stored in `keysIndexCache` and `valuesIndexCache`).
    - Helper functions (e.g., `readIndexAt`) use the in-memory cache if available, falling back to file I/O if caching is disabled or not yet loaded.
-   - The caches are flushed (set to `nil`) on write operations (e.g., `Put()` or `Delete()`) to ensure consistency.
+   - The caches are dumped (set to `nil`) on write operations (e.g., `Put()` or `Delete()`) to ensure consistency.
 
 2. **Key Existence Map:**
    - An in-memory map (`map[string]bool`) is maintained to track the presence of keys.
@@ -76,7 +76,10 @@ of caching:
    - If a key is not present, then the status is unknown and the disk is queried.
    - This map is built via `loadKeyCache()`, which scans the key index and data files using a lock-free mapping function (`LockFreeMapFunc`).
    - This cache allows for a fast existence check in methods such as `Exists()` and also aids in the `Get()` operation.
-
+2.5 **Data Offset Map:**
+  - An in-memory map (`map[string][2]int64`) is maintained to track the start and end positions of data in the data file.
+  - This map is built mainly from the Get routine, and failures simply incure the standard disk search (which still may hit the other caches).
+  - Used to speed up gets, by reducing the disk access to one seek.
 3. **Cache Statistics:**
    - The store tracks metrics including cache hits, misses, flushes, and loads.
    - The helper `maybePrintCacheStats()` increments a request counter and prints these statistics periodically, assisting maintainers in monitoring cache performance and diagnosing issues.
