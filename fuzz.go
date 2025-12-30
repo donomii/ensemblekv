@@ -109,6 +109,8 @@ func GetDBLimits(storeName string) DBLimits {
 	case "ExtentMmap", "LineExtentMmap", "EnsembleExtentMmap", "TreeExtentMmap":
 		fallthrough
 	case "ExtentKeyValueStore", "EnsembleExtentStore", "TreeLSMExtentStore":
+		fallthrough
+	case "SingleFileLSM", "EnsembleLSMSingleFileLSM", "TreeLSMSingleFileLSM", "StarLSMSingleFileLSM":
 		return DBLimits{
 			maxKeySize:   testMaxKeySize,   // Limited for testing speed
 			maxValueSize: testMaxValueSize, // Limited for testing speed

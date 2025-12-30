@@ -333,7 +333,7 @@ var baseStores = []struct {
 	{"ExtentMmap", ExtentMmapCreator},
 	// {"Pudge", PudgeCreator},
 	{"JsonKV", JsonKVCreator},
-	//{"SingleFile", SingleFileKVCreator},
+	{"SingleFileLSM", SingleFileKVCreator},
 	{"SQLite", SQLiteCreator},
 	{"MmapSingle", MmapSingleCreator},
 }

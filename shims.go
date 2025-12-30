@@ -31,8 +31,11 @@ func ExtentMmapCreator(directory string, blockSize, fileSize int64) (KvLike, err
 }
 
 func SingleFileKVCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
-	store := NewSingleFileKVStore(directory+"/singlefilekv", blockSize, int64(fileSize))
-	return store, nil
+	// Ensure directory exists
+	if err := os.MkdirAll(directory, 0755); err != nil {
+		return nil, err
+	}
+	return NewSingleFileLSM(directory+"/singlefilekv", blockSize, int64(fileSize))
 }
 
 func MmapSingleCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
