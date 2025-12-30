@@ -54,7 +54,7 @@ directory:
      - When reading an index entry, a negative value indicates a tombstone, and its absolute value is used to locate the original data in the data file.
 	 - The first index in the index file must always point to the 0(zero) offset in the data file.
 	 - The last index in the index file must always point to the end of the data file.
-	 - If the final index points outside the data file, the index file is assumed corrupt, and the index file is truncated until the last index is within the data file, then the data file is truncated.  
+	 - If the final index points outside the data file, the index file is assumed corrupt, and the index file is truncated until the last index is within the data file, then the data file is truncated.
 	 - If the final index points inside the data file, the crash probably occurred after writing the data and before updating the index, so we truncate the data file to the last index.
 
 -----------------------------------------------------------------------
@@ -683,6 +683,8 @@ func (s *ExtentKeyValStore) Put(key, value []byte) error {
 	defer s.globalLock.Unlock()
 	s.ClearCache()
 
+	checkLastIndexEntry(s.keysIndex, s.keysFile)
+	checkLastIndexEntry(s.valuesIndex, s.valuesFile)
 	checkIndexSigns(s.keysIndex, s.valuesIndex)
 
 	//Write the value to the values data file
@@ -998,6 +1000,8 @@ func (s *ExtentKeyValStore) Delete(key []byte) error {
 	defer s.globalLock.Unlock()
 	s.ClearCache()
 
+	checkLastIndexEntry(s.keysIndex, s.keysFile)
+	checkLastIndexEntry(s.valuesIndex, s.valuesFile)
 	checkIndexSigns(s.keysIndex, s.valuesIndex)
 
 	//Write the value to the values data file
