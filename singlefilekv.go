@@ -10,6 +10,12 @@ import (
 	"sync"
 )
 
+// *****************************************************************************
+// SingleFileLSM
+//
+// Entirely vibe coded, I don't trust any part of this, but it /seems/ to work.
+// *****************************************************************************
+
 const (
 	// File format constants
 	singleFileHeaderSize = 4096
@@ -17,8 +23,8 @@ const (
 	singleFileVersion    = 1
 
 	// WAL constants
-	walEntryHeaderSize = 28 // checksum(8) + keyLen(8) + valLen(8) + flags(4)
-	walMaxSize        = 64 * 1024 * 1024 // 64MB
+	walEntryHeaderSize = 28               // checksum(8) + keyLen(8) + valLen(8) + flags(4)
+	walMaxSize         = 64 * 1024 * 1024 // 64MB
 
 	// MemTable constants
 	memTableMaxSize = 8 * 1024 * 1024 // 8MB before flush
@@ -27,8 +33,8 @@ const (
 	sstableMaxSize = 256 * 1024 * 1024 // 256MB per SSTable
 
 	// Size limits - supports very large keys and values
-	maxKeySize   = 1024 * 1024 * 1024             // 1GB max key size
-	maxValueSize = 1024 * 1024 * 1024 * 1024      // 1TB max value size
+	maxKeySize   = 1024 * 1024 * 1024        // 1GB max key size
+	maxValueSize = 1024 * 1024 * 1024 * 1024 // 1TB max value size
 
 	// Tombstone marker
 	tombstoneMarker = int64(-1)
@@ -64,12 +70,12 @@ type SingleFileLSM struct {
 
 // sstableMetadata describes an immutable SSTable extent in the file
 type sstableMetadata struct {
-	offset      int64  // Start offset in file
-	size        int64  // Total size in bytes
-	minKey      []byte // Smallest key (for range checks)
-	maxKey      []byte // Largest key (for range checks)
-	numEntries  int    // Number of key-value pairs
-	checksum    uint32 // Checksum of entire SSTable
+	offset     int64  // Start offset in file
+	size       int64  // Total size in bytes
+	minKey     []byte // Smallest key (for range checks)
+	maxKey     []byte // Largest key (for range checks)
+	numEntries int    // Number of key-value pairs
+	checksum   uint32 // Checksum of entire SSTable
 }
 
 // walEntry represents a single write-ahead log entry
