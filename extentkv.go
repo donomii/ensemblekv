@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/donomii/clusterF/syncmap"
 	"github.com/donomii/goof"
-	"github.com/sasha-s/go-deadlock"
 )
 
 var EnableIndexCaching bool = true // Feature flag for index caching
@@ -21,12 +21,7 @@ var ExtraChecks bool = false
 EXTENT KEY-VALUE STORE: FORMAT & OPERATION OVERVIEW
 =======================================================================
 
-The ExtentKeyValStore is an append-only, file-based key–value store designed
-for high-throughput writes and efficient lookups. It separates data storage
-from index management and leverages optional in-memory caching to speed up
-accesses to index information. This document describes the file formats,
-data layouts, caching mechanisms, and overall operational workflow for the
-store, serving as a guide for future maintainers.
+The ExtentKeyValStore is an append-only, file-based key–value store designed for high-throughput writes and efficient lookups. It separates data storage from index management and leverages optional in-memory caching to speed up accesses to index information. This document describes the file formats, data layouts, caching mechanisms, and overall operational workflow for the store, serving as a guide for future maintainers.
 
 -----------------------------------------------------------------------
 File Organization & Data Layout
@@ -40,31 +35,23 @@ directory:
    - **values.dat**: Holds the raw bytes of all values, appended sequentially.
 
    *How Data Files Work:*
-   - Every `Put()` operation appends the key to *keys.dat* and the
-     corresponding value to *values.dat*.
-   - The actual position (byte offset) where a key or value is written is
-     determined by the current end-of-file pointer.
+   - Every `Put()` operation appends the key to *keys.dat* and then the corresponding value to *values.dat*.
+   - The actual position (byte offset) where a key or value is written is determined by the current end-of-file pointer.
 
 2. **Index Files**
-   - **keys.index**: Maintains a sequence of 8-byte (int64) BigEndian numbers
-     that indicate cumulative end offsets in *keys.dat*.
+   - **keys.index**: Maintains a sequence of 8-byte (int64) BigEndian numbers that indicate absolute end offsets in *keys.dat*.
    - **values.index**: Maintains a similar sequence for *values.dat*.
 
    *Index File Format & Purpose:*
    - **Initialization:**
-     - When first created, an index file is seeded with a single value
-       `0`, representing the initial offset.
+     - When first created, an index file is seeded with a single value `0`, representing the initial offset.
    - **Record Boundaries:**
-     - Each time data is appended, the store writes a new cumulative
-       offset into the corresponding index file.
-     - The length of a given record is computed by subtracting the previous
-       index entry from the current one. For example, if a key starts at byte
-       offset 10 and the next index entry is 15, the key's length is 5 bytes.
+     - Each time data is appended, the store writes a new absolute offset into the corresponding index file.
+     - The length of a given record is computed by subtracting the previous index entry from the current one. For example, if a key starts at byte offset 10 and the next index entry is 15, the key's length is 5 bytes.
    - **Tombstones (Deletions):**
      - Deletions are handled logically by marking records as “deleted”.
      - A deletion is recorded by writing a negative offset into the index file.
-     - When reading an index entry, a negative value indicates a tombstone,
-       and its absolute value is used to locate the original data in the data file.
+     - When reading an index entry, a negative value indicates a tombstone, and its absolute value is used to locate the original data in the data file.
 
 -----------------------------------------------------------------------
 Caching Mechanism & In-Memory Structures
@@ -75,37 +62,27 @@ of caching:
 
 1. **Index Caching:**
    - Controlled by the global flag `EnableIndexCaching`.
-   - When enabled, the entire contents of *keys.index* and *values.index*
-     are read into memory (stored in `keysIndexCache` and `valuesIndexCache`).
-   - Helper functions (e.g., `readIndexAt`) use the in-memory cache if available,
-     falling back to file I/O if caching is disabled or not yet loaded.
-   - The caches are flushed (set to `nil`) on write operations (e.g., `Put()`
-     or `Delete()`) to ensure consistency.
+   - When enabled, the entire contents of *keys.index* and *values.index* are read into memory (stored in `keysIndexCache` and `valuesIndexCache`).
+   - Helper functions (e.g., `readIndexAt`) use the in-memory cache if available, falling back to file I/O if caching is disabled or not yet loaded.
+   - The caches are flushed (set to `nil`) on write operations (e.g., `Put()` or `Delete()`) to ensure consistency.
 
 2. **Key Existence Map:**
-   - An in-memory map (`map[string]bool`) is maintained to track the presence
-     of keys.
-   - A key mapped to `true` indicates that it exists; `false` indicates that it
-     has been deleted (a tombstone).
+   - An in-memory map (`map[string]bool`) is maintained to track the presence of keys.
+   - A key mapped to `true` indicates that it exists; `false` indicates that it has been deleted (a tombstone).
    - If a key is not present, then the status is unknown and the disk is queried.
-   - This map is built via `loadKeyCache()`, which scans the key index and data
-     files using a lock-free mapping function (`LockFreeMapFunc`).
-   - This cache allows for a fast existence check in methods such as `Exists()`
-     and also aids in the `Get()` operation.
+   - This map is built via `loadKeyCache()`, which scans the key index and data files using a lock-free mapping function (`LockFreeMapFunc`).
+   - This cache allows for a fast existence check in methods such as `Exists()` and also aids in the `Get()` operation.
 
 3. **Cache Statistics:**
    - The store tracks metrics including cache hits, misses, flushes, and loads.
-   - The helper `maybePrintCacheStats()` increments a request counter and prints
-     these statistics periodically, assisting maintainers in monitoring cache
-     performance and diagnosing issues.
+   - The helper `maybePrintCacheStats()` increments a request counter and prints these statistics periodically, assisting maintainers in monitoring cache performance and diagnosing issues.
 
 -----------------------------------------------------------------------
 Operational Workflow
 -----------------------------------------------------------------------
 
 1. **Initialization (`NewExtentKeyValueStore`):**
-   - The store creates or opens the four files. If the index files do not exist,
-     they are created and initialized with a `0`.
+   - The store creates or opens the four files. If the index files do not exist, they are created and initialized with a `0`.
    - It validates index integrity by reading the last index entry and comparing
      it to the actual size of the corresponding data file. If mismatches are
      detected, the index file is truncated to the expected size.
@@ -216,19 +193,17 @@ func trimTo40(data []byte) string {
 // --- Add these new fields to ExtentKeyValStore struct:
 type ExtentKeyValStore struct {
 	DefaultOps
-	keysFile    *os.File
-	valuesFile  *os.File
-	keysIndex   *os.File
-	valuesIndex *os.File
-	blockSize   int64
-	globalLock  deadlock.Mutex
-	cache       *syncmap.SyncMap[string, bool]
+	keysFile    *os.File                       // the keys file holds the key data, concatenated without any delimiters
+	valuesFile  *os.File                       // the values file holds the value data, concatenated without any delimiters
+	keysIndex   *os.File                       // the keys index file holds the absolute start offsets of each key in the keys file
+	valuesIndex *os.File                       // the values index file holds the absolute start offsets of each value in the values file
+	blockSize   int64                          // Currently unused, required to support interface
+	globalLock  sync.Mutex                     // lock for the entire store
+	cache       *syncmap.SyncMap[string, bool] // cache for fast existence checks
 
-	// New fields for index caching
-	keysIndexCache   []byte
-	valuesIndexCache []byte
+	keysIndexCache   []byte // holds the entire keys index file in memory to avoid disk access
+	valuesIndexCache []byte // holds the entire values index file in memory to avoid disk access
 
-	// New fields for monitoring cache efficiency
 	cacheHits    int
 	cacheMisses  int
 	cacheWrites  int
@@ -354,7 +329,7 @@ func NewExtentKeyValueStore(directory string, blockSize, filesize int64) (*Exten
 
 	// Keys index file must contain at least one entry
 	if stat.Size() < 8 {
-		panic("Keys index file is empty")
+		panic("Keys index file is empty.  Initialise and retry")
 	}
 
 	//Read the last index item to get the end of the file.  If this is different to the file size, then the file is corrupt and we should truncate it to size
