@@ -505,14 +505,6 @@ func (s *ExtentKeyValStore) loadKeyCache() error {
 		panicOnError("Read key data", err)
 		//debugf("searchDbForKeyExists KEY   Entry: %d, BytePosition: %d, Deleted: %t, Key: %s\n", entry, keyPos, deleted, trimTo40(keyData))
 
-		var valuePos int64
-		_, err = s.valuesIndex.Seek(int64(entry)*8, 0)
-		panicOnError("Seek to current entry in values index file", err)
-		err = binary.Read(s.valuesIndex, binary.BigEndian, &valuePos)
-		if err != nil {
-			break
-		}
-
 		//debugf("searchDbForKeyExists VALUE Entry: %d, BytePosition: %d\n", entry, valuePos)
 
 		s.cache.Store(string(keyData), !deleted)
