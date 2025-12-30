@@ -192,13 +192,7 @@ func (s *EnsembleKv) Put(key []byte, val []byte) error {
 	// Increment total key count
 	s.totalKeys = s.totalKeys + 1
 
-	// Check if rebalance is needed
-	if s.totalKeys/s.N >= s.maxKeys {
-		fmt.Printf("Substores hav grown past key limit of %d\n", s.maxKeys) //FIXME make debug log
-		if err := s.rebalance(); err != nil {
-			return err
-		}
-	}
+
 
 	return nil
 }
@@ -252,73 +246,6 @@ func (s *EnsembleKv) Close() error {
 	return nil
 }
 
-// rebalance redistributes keys across a new generation of substores when the current generation reaches capacity.
-func (s *EnsembleKv) rebalance() error {
-	//fmt.Printf("Rebalancing store with %d keys\n", s.totalKeys)
-	//go fmt.Printf("Rebalancing store complete with %v keys\n", s.totalKeys)
-
-	// Increment generation and calculate new N
-	s.generation++
-	s.N *= 2
-
-	// Create new generation directory
-	newGenPath := filepath.Join(s.directory, fmt.Sprintf("%d", s.generation))
-	if err := os.MkdirAll(newGenPath, os.ModePerm); err != nil {
-		return err
-	}
-
-	//fmt.Printf("Creating new generation %d with %d substores\n", s.generation, s.N)
-	// Create new substores
-	newSubstores := make([]KvLike, s.N)
-	for i := int64(0); i < s.N; i++ {
-		var err error
-		subPath := filepath.Join(newGenPath, fmt.Sprintf("%d", i))
-		newSubstores[i], err = s.createStore(subPath, s.maxBlock, s.filesize)
-		if err != nil {
-			return err
-		}
-
-	}
-
-	//fmt.Printf("Rebalancing %d keys\n", s.totalKeys)
-	// Re-distribute keys
-	for _, substore := range s.substores {
-		_, err := substore.MapFunc(func(key, value []byte) error {
-			hash := s.hashFunc(key)
-			newIndex := int64(hash) % s.N
-			//fmt.Printf("Rebalancing key %v to substore %d\n", string(key), newIndex)
-			return newSubstores[newIndex].Put(key, value)
-		})
-		if err != nil {
-			return err
-		}
-	}
-
-	//fmt.Printf("Rebalancing complete\n")
-
-	//fmt.Printf("Closing old substores\n")
-	// Close and remove old substores
-	oldGenPath := filepath.Join(s.directory, fmt.Sprintf("%d", s.generation-1))
-	for _, substore := range s.substores {
-		//fmt.Printf("Closing substore\n")
-		if err := substore.Close(); err != nil {
-			return fmt.Errorf("Error closing substore: %v\n", err)
-		}
-	}
-
-	//fmt.Printf("Removing old generation %d\n", s.generation-1)
-	//fmt.Printf("Removing old generation %v\n", oldGenPath)
-	if err := os.RemoveAll(oldGenPath); err != nil {
-		fmt.Printf("Error removing old generation: %v\n", err)
-		return err
-	}
-
-	// Update substores to new generation
-	s.substores = newSubstores
-
-	// Save metadata after rebalancing
-	return s.saveMetadata()
-}
 
 // Metadata represents the persistent state of the Store.
 type Metadata struct {
