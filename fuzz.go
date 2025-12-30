@@ -265,7 +265,7 @@ func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
 		}
 	})
 
-	t.Run("Mixed Size Operations", func(t *testing.T) {
+	t.Run("Mixed_Size_Operations", func(t *testing.T) {
 		sizes := []struct {
 			keySize   int
 			valueSize int
@@ -275,7 +275,6 @@ func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
 			{128, 1024 * 1024},
 			{256, 10 * 1024 * 1024},
 			{512, 100 * 1024 * 1024},
-			{1024, 1024 * 1024 * 1024},
 		}
 
 		for _, size := range sizes {

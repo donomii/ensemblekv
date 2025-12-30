@@ -52,6 +52,10 @@ directory:
      - Deletions are handled logically by marking records as “deleted”.
      - A deletion is recorded by writing a negative offset into the index file.
      - When reading an index entry, a negative value indicates a tombstone, and its absolute value is used to locate the original data in the data file.
+	 - The first index in the index file must always point to the 0(zero) offset in the data file.
+	 - The last index in the index file must always point to the end of the data file.
+	 - If the final index points outside the data file, the index file is assumed corrupt, and the index file is truncated until the last index is within the data file, then the data file is truncated.  
+	 - If the final index points inside the data file, the crash probably occurred after writing the data and before updating the index, so we truncate the data file to the last index.
 
 -----------------------------------------------------------------------
 Caching Mechanism & In-Memory Structures
@@ -677,73 +681,105 @@ func (s *ExtentKeyValStore) ClearCache() {
 func (s *ExtentKeyValStore) Put(key, value []byte) error {
 	s.globalLock.Lock()
 	defer s.globalLock.Unlock()
+	s.ClearCache()
 
+	checkIndexSigns(s.keysIndex, s.valuesIndex)
+
+	//Write the value to the values data file
 	// Move to end of data file for values.
 	valuePos, err := s.valuesFile.Seek(0, 2)
 	panicOnError("Seek to end of values file", err)
-	valueSize, err := s.valuesFile.Write(value)
-	panicOnError("Write value to values file", err)
 
-	if valueSize != len(value) {
-		panic("Wrote wrong number of bytes")
-	}
+	err = binary.Write(s.valuesFile, binary.BigEndian, value)
+	panicOnError("Write value to values file", err)
 
 	// Get the end of file position for the values file
 	endOfValuesFile, err := s.valuesFile.Seek(0, 2)
-	panicOnError("Seek to end of values file", err)
+	panicOnError("Seek to end of values data file", err)
 
 	// Check this value matches the calculated end of file
-	if valuePos+int64(valueSize) != endOfValuesFile {
-		panic(fmt.Errorf("valuePos+valueSize (%d) != endOfValuesFile (%d)", valuePos+int64(valueSize), endOfValuesFile))
+	if valuePos+int64(len(value)) != endOfValuesFile {
+		panic(fmt.Errorf("valuePos+valueSize (%d) != endOfValuesFile (%d)", valuePos+int64(len(value)), endOfValuesFile))
 	}
 
-	// Write the end of the file position to the values index.
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+
+	// Seek to the end of the values index file
 	_, err = s.valuesIndex.Seek(0, 2)
 	panicOnError("Seek to end of values index file", err)
 
+	//Write end of value file offset to values index file
 	err = binary.Write(s.valuesIndex, binary.BigEndian, endOfValuesFile)
 	panicOnError("Write end of values file to values index file", err)
+	// --- Now we write the key
 
-	// Move to end of data file for keys.
+	// Seek to the end of the keys data file
 	keyDataPos, err := s.keysFile.Seek(0, 2)
-	panicOnError("Seek to end of keys file", err)
+	panicOnError("Seek to end of keys data file", err)
 
-	// Write the key to the keys file.
+	// Write the key to the keys data file.
 	keySize, err := s.keysFile.Write(key)
-	panicOnError("Write key to keys file", err)
+	panicOnError("Write key to keys data file", err)
 
 	// Check we wrote the correct number of bytes
 	if keySize != len(key) {
 		panic("Key size mismatch")
 	}
 
-	// Get the end of file position for the keys file
-	endOfKeysFile, err := s.keysFile.Seek(0, 2)
-	panicOnError("Seek to end of keys file", err)
+	// Get the end of file position for the keydata file
+	endOfKeyDataFile, err := s.keysFile.Seek(0, 2)
+	panicOnError("Seek to end of keys data file", err)
 
 	// Check this key matches the calculated end of file
-	if keyDataPos+int64(keySize) != endOfKeysFile {
-		panic(fmt.Errorf("keyDataPos+keySize (%d) != endOfKeysFile (%d)", keyDataPos+int64(keySize), endOfKeysFile))
+	if keyDataPos+int64(keySize) != endOfKeyDataFile {
+		panic(fmt.Errorf("keyDataPos+keySize (%d) != endOfKeysFile (%d)", keyDataPos+int64(keySize), endOfKeyDataFile))
 	}
 
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
 	// Seek to the end of the keys index
 	_, err = s.keysIndex.Seek(0, 2)
 	panicOnError("Seek to end of keys index file", err)
 
 	// Write the end of the file position to the keys index.
-	err = binary.Write(s.keysIndex, binary.BigEndian, endOfKeysFile)
+	err = binary.Write(s.keysIndex, binary.BigEndian, endOfKeyDataFile)
 	panicOnError("Write to keys index file", err)
 
 	checkLastIndexEntry(s.keysIndex, s.keysFile)
 	checkLastIndexEntry(s.valuesIndex, s.valuesFile)
 	checkIndexSigns(s.keysIndex, s.valuesIndex)
-	s.keysIndexCache = nil
-	s.valuesIndexCache = nil
-	s.valueOffsetCache = syncmap.NewSyncMap[string, [2]int64]()
-	if EnableIndexCaching {
-		s.cacheWrites++
-		s.existsCache.Store(string(key), true)
-	}
+	s.ClearCache()
 	return nil
 }
 
@@ -799,6 +835,9 @@ func (s *ExtentKeyValStore) Get(key []byte) ([]byte, error) {
 		if start < 0 {
 			return nil, errors.New("key marked as not present in cache")
 		}
+		s.globalLock.Lock()
+		defer s.globalLock.Unlock()
+		s.valuesFile.Seek(start, 0)
 		data, err := readNbytes(s.valuesFile, int(end-start))
 		if err != nil {
 			goof.Panicf("While attempting to read from %v to %v(size %v): %v", start, end, end-start, err)
@@ -844,6 +883,7 @@ func (s *ExtentKeyValStore) readDataAtIndexPos(indexPosition int64, indexFile *o
 	if EnableIndexCaching && cache != nil {
 		//Read the offset to the data
 		err = binary.Read(bytes.NewReader(cache[indexPosition:indexPosition+8]), binary.BigEndian, &dataPos)
+
 	} else {
 		_, err = indexFile.Seek(indexPosition, 0)
 		if err != nil {
@@ -956,31 +996,90 @@ func (s *ExtentKeyValStore) MapFunc(f func([]byte, []byte) error) (map[string]bo
 func (s *ExtentKeyValStore) Delete(key []byte) error {
 	s.globalLock.Lock()
 	defer s.globalLock.Unlock()
+	s.ClearCache()
 
 	checkIndexSigns(s.keysIndex, s.valuesIndex)
 
-	if EnableIndexCaching {
-		s.cacheWrites++ // count this flush
-	}
-	s.ClearCache()
-	//Seek to the end of the keys data file
-	keyPos, err := s.keysFile.Seek(0, 2)
-	if err != nil {
-		return err
-	}
-	//Write the key to the keys data file
-	keySize, err := s.keysFile.Write(key)
-	if err != nil {
-		return err
+	//Write the value to the values data file
+	// Move to end of data file for values.
+	valuePos, err := s.valuesFile.Seek(0, 2)
+	panicOnError("Seek to end of values file", err)
+
+	valueBytes := []byte("DELETED")
+	err = binary.Write(s.valuesFile, binary.BigEndian, valueBytes)
+	panicOnError("Write tombstone value to values file", err)
+
+	// Get the end of file position for the values file
+	endOfValuesFile, err := s.valuesFile.Seek(0, 2)
+	panicOnError("Seek to end of values data file", err)
+
+	// Check this value matches the calculated end of file
+	if valuePos+int64(len(valueBytes)) != endOfValuesFile {
+		panic(fmt.Errorf("valuePos+valueSize (%d) != endOfValuesFile (%d)", valuePos+int64(len(valueBytes)), endOfValuesFile))
 	}
 
-	//Check the written key size is the same as the key size
+	//Overwrite the current key with a tombstone
+	valueTombstone := -valuePos
+	debugf("Value tombstone is %d\n", valueTombstone)
+
+	// Write the (negative) end of the file position to the values index.
+	valueIndexStart := endOfValuesFile - 8
+	pos, err := s.valuesIndex.Seek(valueIndexStart, 0)
+	panicOnError("Seek to last value index (end -8)", err)
+
+	if pos != valueIndexStart {
+		panic("Seek to last value index failed")
+	}
+
+	// Overwrite the last value index with the tombstone
+	err = binary.Write(s.valuesIndex, binary.BigEndian, valueTombstone)
+	panicOnError("Write value tombstone", err)
+
+	// Calculate the end of the value data file
+	nextValuePos := valuePos + int64(len(valueBytes))
+
+	// Seek to the end of the values index file
+	newEndOfValuesFile, err := s.valuesFile.Seek(0, 2)
+	panicOnError("Seek to end of values file", err)
+
+	// Check the next value index is the same as the value file length
+	if nextValuePos != newEndOfValuesFile {
+		panic("Value file is corrupt")
+	}
+
+	// Seek to the end of the values index file
+	_, err = s.valuesIndex.Seek(0, 2)
+	panicOnError("Seek to end of values index file", err)
+
+	// Write the next value index (the end of the value data file)
+	err = binary.Write(s.valuesIndex, binary.BigEndian, newEndOfValuesFile)
+	panicOnError("Write to values index file", err)
+
+	// --- Now we write the key
+
+	//Seek to the end of the keys data file
+	keyDataPos, err := s.keysFile.Seek(0, 2)
+	panicOnError("Seek to end of keys data file", err)
+
+	//Write the key to the keys data file
+	keySize, err := s.keysFile.Write(key)
+	panicOnError("Write key to keys data file", err)
+
+	// Check we wrote the correct number of bytes
 	if keySize != len(key) {
 		panic("Key size mismatch")
 	}
 
+	endOfKeyDataFile, err := s.keysFile.Seek(0, 2)
+	panicOnError("Seek to end of keys data file", err)
+
+	// Check this key matches the calculated end of file
+	if keyDataPos+int64(keySize) != endOfKeyDataFile {
+		panic(fmt.Errorf("keyDataPos+keySize (%d) != endOfKeysFile (%d)", keyDataPos+int64(keySize), endOfKeyDataFile))
+	}
+
 	// Create the tombstone.  This is a negative of the key data position
-	keyTombstone := -keyPos
+	keyTombstoneOffset := -endOfKeyDataFile
 
 	// Seek to the end of the keys index file
 	eofKeyIndex, err := s.keysIndex.Seek(0, 2)
@@ -993,81 +1092,18 @@ func (s *ExtentKeyValStore) Delete(key []byte) error {
 	_, err = s.keysIndex.Seek(keyIndexStart, 0)
 	panicOnError("Seek to last key index", err)
 
-	// Write the tombstone
-	err = binary.Write(s.keysIndex, binary.BigEndian, keyTombstone)
-	//debugf("Wrote tombstone at index %d, position is now %d\n", keyIndexStart/8, keyTombstone)
+	// Overwrite the end of file index pointer with the tombstone
+	err = binary.Write(s.keysIndex, binary.BigEndian, keyTombstoneOffset)
 
 	// Get the next key index (the end of the key data file).  This should be the same as the length of the key file
-	nextKeyPos := keyPos + int64(keySize)
-	if nextKeyPos != keyPos+int64(keySize) {
-		panic("Key file is corrupt")
-	}
 
-	// Get the length of the key data file
-	keyFileLength, err := s.keysFile.Seek(0, 2)
-	if err != nil {
-		return err
-	}
-
-	// Check the next key index is the same as the key file length
-	if nextKeyPos != keyFileLength {
-		panic("Key file is corrupt")
-	}
-
-	// Now write the next key index (the end of the key data file)
-	s.keysIndex.Seek(0, 2)
-	err = binary.Write(s.keysIndex, binary.BigEndian, nextKeyPos)
-	if err != nil {
-		return err
-	}
-
-	//Write the value to the values data file
-	valuePos, err := s.valuesFile.Seek(0, 2)
-	panicOnError("Seek to end of values file", err)
-
-	tombStoneValue := []byte("DELETED")
-	valueSize, err := s.valuesFile.Write(tombStoneValue)
-	panicOnError("Write tombstone value", err)
-
-	//Overwrite the current key with a tombstone
-	valueTombstone := -valuePos
-	debugf("Value tombstone is %d\n", valueTombstone)
-	eofValueIndex, err := s.valuesIndex.Seek(0, 2)
-	panicOnError("Seek to end of values index file", err)
-
-	valueIndexStart := eofValueIndex - 8
-	pos, err := s.valuesIndex.Seek(valueIndexStart, 0)
-	panicOnError("Seek to last value index", err)
-
-	if pos != valueIndexStart {
-		panic("Seek to last value index failed")
-	}
-
-	// Overwrite the last value index with the tombstone
-	debugf("Writing value tombstone at index %d, position is now %d\n", valueIndexStart/8, valueTombstone)
-	err = binary.Write(s.valuesIndex, binary.BigEndian, valueTombstone)
-	panicOnError("Write value tombstone", err)
-
-	// Calculate the end of the value data file
-	nextValuePos := valuePos + int64(valueSize)
-
-	// Get the length of the value data file from seek
-	valueFileLength, err := s.valuesFile.Seek(0, 2)
-	panicOnError("Seek to end of values file", err)
-
-	// Check the next value index is the same as the value file length
-	if nextValuePos != valueFileLength {
-		panic("Value file is corrupt")
-	}
-
-	// Seek to the end of the values index file
-	_, err = s.valuesIndex.Seek(0, 2)
-	panicOnError("Seek to end of values index file", err)
-
-	// Write the next value index (the end of the value data file)
-	debugf("Writing next value at index %d, position is now %d\n", eofValueIndex/8, nextValuePos)
-	err = binary.Write(s.valuesIndex, binary.BigEndian, valueFileLength)
-	panicOnError("Write to values index file", err)
+	// Now write the next key index (offset to the end of the key data file)
+	// Seek to the end of the keys index
+	_, err = s.keysIndex.Seek(0, 2)
+	panicOnError("Seek to end of keys index file", err)
+	// Write the end of the file position to the keys index.
+	err = binary.Write(s.keysIndex, binary.BigEndian, endOfKeyDataFile)
+	panicOnError("Write to keys index file", err)
 
 	debugln("Deleted key", trimTo40(key))
 
@@ -1075,9 +1111,7 @@ func (s *ExtentKeyValStore) Delete(key []byte) error {
 	checkLastIndexEntry(s.valuesIndex, s.valuesFile)
 	checkIndexSigns(s.keysIndex, s.valuesIndex)
 
-	if EnableIndexCaching {
-		s.existsCache.Store(string(key), false)
-	}
+	s.ClearCache()
 	return nil
 }
 
