@@ -14,7 +14,7 @@ func TestSingleFileLSMBasic(t *testing.T) {
 	// Create new store
 	store, err := NewSingleFileLSM(dbPath, 4096, 1024*1024)
 	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
+		fatalf(t, "action=Create path=%s err=%v", dbPath, err)
 	}
 
 	// Test Put and Get
@@ -22,42 +22,42 @@ func TestSingleFileLSMBasic(t *testing.T) {
 	testValue := []byte("test-value")
 
 	if err := store.Put(testKey, testValue); err != nil {
-		t.Fatalf("Failed to put: %v", err)
+		fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(testKey), trimTo40(testValue), err)
 	}
 
 	val, err := store.Get(testKey)
 	if err != nil {
-		t.Fatalf("Failed to get: %v", err)
+		fatalf(t, "action=Get key=%s err=%v", trimTo40(testKey), err)
 	}
 
 	if string(val) != string(testValue) {
-		t.Fatalf("Value mismatch: got %s, want %s", val, testValue)
+		fatalf(t, "action=Get key=%s expected=%s got=%s", trimTo40(testKey), trimTo40(testValue), trimTo40(val))
 	}
 
 	// Test Exists
 	if !store.Exists(testKey) {
-		t.Fatal("Key should exist")
+		fatalf(t, "action=Exists key=%s expected=true got=false", trimTo40(testKey))
 	}
 
 	// Close and reopen
 	if err := store.Close(); err != nil {
-		t.Fatalf("Failed to close: %v", err)
+		fatalf(t, "action=Close path=%s err=%v", dbPath, err)
 	}
 
 	store2, err := NewSingleFileLSM(dbPath, 4096, 1024*1024)
 	if err != nil {
-		t.Fatalf("Failed to reopen: %v", err)
+		fatalf(t, "action=Reopen path=%s err=%v", dbPath, err)
 	}
 	defer store2.Close()
 
 	// Verify persistence
 	val2, err := store2.Get(testKey)
 	if err != nil {
-		t.Fatalf("Failed to get after reopen: %v", err)
+		fatalf(t, "action=Get key=%s err=%v", trimTo40(testKey), err)
 	}
 
 	if string(val2) != string(testValue) {
-		t.Fatalf("Value mismatch after reopen: got %s, want %s", val2, testValue)
+		fatalf(t, "action=Get key=%s expected=%s got=%s", trimTo40(testKey), trimTo40(testValue), trimTo40(val2))
 	}
 
 	t.Log("SUCCESS: Basic operations work correctly")
@@ -69,7 +69,7 @@ func TestSingleFileLSMDelete(t *testing.T) {
 
 	store, err := NewSingleFileLSM(dbPath, 4096, 1024*1024)
 	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
+		fatalf(t, "action=Create path=%s err=%v", dbPath, err)
 	}
 	defer store.Close()
 
@@ -78,21 +78,21 @@ func TestSingleFileLSMDelete(t *testing.T) {
 	testValue := []byte("test-value")
 
 	if err := store.Put(testKey, testValue); err != nil {
-		t.Fatalf("Failed to put: %v", err)
+		fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(testKey), trimTo40(testValue), err)
 	}
 
 	if err := store.Delete(testKey); err != nil {
-		t.Fatalf("Failed to delete: %v", err)
+		fatalf(t, "action=Delete key=%s err=%v", trimTo40(testKey), err)
 	}
 
 	// Verify deleted
 	if store.Exists(testKey) {
-		t.Fatal("Key should not exist after delete")
+		fatalf(t, "action=Exists key=%s expected=false got=true", trimTo40(testKey))
 	}
 
 	_, err = store.Get(testKey)
 	if err == nil {
-		t.Fatal("Get should fail for deleted key")
+		fatalf(t, "action=Get key=%s expectedErr=true gotErr=false", trimTo40(testKey))
 	}
 
 	t.Log("SUCCESS: Delete works correctly")
@@ -104,7 +104,7 @@ func TestSingleFileLSMMultipleKeys(t *testing.T) {
 
 	store, err := NewSingleFileLSM(dbPath, 4096, 1024*1024)
 	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
+		fatalf(t, "action=Create path=%s err=%v", dbPath, err)
 	}
 	defer store.Close()
 
@@ -114,7 +114,7 @@ func TestSingleFileLSMMultipleKeys(t *testing.T) {
 		key := []byte(fmt.Sprintf("key-%d", i))
 		value := []byte(fmt.Sprintf("value-%d", i))
 		if err := store.Put(key, value); err != nil {
-			t.Fatalf("Failed to put key %d: %v", i, err)
+			fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(key), trimTo40(value), err)
 		}
 	}
 
@@ -125,11 +125,11 @@ func TestSingleFileLSMMultipleKeys(t *testing.T) {
 
 		val, err := store.Get(key)
 		if err != nil {
-			t.Fatalf("Failed to get key %d: %v", i, err)
+			fatalf(t, "action=Get key=%s err=%v", trimTo40(key), err)
 		}
 
 		if string(val) != string(expectedValue) {
-			t.Fatalf("Value mismatch for key %d: got %s, want %s", i, val, expectedValue)
+			fatalf(t, "action=Get key=%s expected=%s got=%s", trimTo40(key), trimTo40(expectedValue), trimTo40(val))
 		}
 	}
 
@@ -142,7 +142,7 @@ func TestSingleFileLSMMapFunc(t *testing.T) {
 
 	store, err := NewSingleFileLSM(dbPath, 4096, 1024*1024)
 	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
+		fatalf(t, "action=Create path=%s err=%v", dbPath, err)
 	}
 	defer store.Close()
 
@@ -155,7 +155,7 @@ func TestSingleFileLSMMapFunc(t *testing.T) {
 
 	for k, v := range testData {
 		if err := store.Put([]byte(k), []byte(v)); err != nil {
-			t.Fatalf("Failed to put %s: %v", k, err)
+			fatalf(t, "action=Put key=%s value=%s err=%v", k, v, err)
 		}
 	}
 
@@ -167,16 +167,16 @@ func TestSingleFileLSMMapFunc(t *testing.T) {
 	})
 
 	if err != nil {
-		t.Fatalf("MapFunc failed: %v", err)
+		fatalf(t, "action=MapFunc err=%v", err)
 	}
 
 	// Verify all keys found
 	for k, v := range testData {
 		if found[k] != v {
-			t.Fatalf("MapFunc: expected %s=%s, got %s", k, v, found[k])
+			fatalf(t, "action=MapFunc key=%s expected=%s got=%s", k, v, found[k])
 		}
 		if !keys[k] {
-			t.Fatalf("MapFunc: key %s not in result map", k)
+			fatalf(t, "action=MapFunc key=%s expectedPresent=true got=false", k)
 		}
 	}
 
@@ -189,7 +189,7 @@ func TestSingleFileLSMMapPrefixFunc(t *testing.T) {
 
 	store, err := NewSingleFileLSM(dbPath, 4096, 1024*1024)
 	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
+		fatalf(t, "action=Create path=%s err=%v", dbPath, err)
 	}
 	defer store.Close()
 
@@ -203,7 +203,7 @@ func TestSingleFileLSMMapPrefixFunc(t *testing.T) {
 
 	for k, v := range testData {
 		if err := store.Put([]byte(k), []byte(v)); err != nil {
-			t.Fatalf("Failed to put %s: %v", k, err)
+			fatalf(t, "action=Put key=%s value=%s err=%v", k, v, err)
 		}
 	}
 
@@ -215,17 +215,17 @@ func TestSingleFileLSMMapPrefixFunc(t *testing.T) {
 	})
 
 	if err != nil {
-		t.Fatalf("MapPrefixFunc failed: %v", err)
+		fatalf(t, "action=MapPrefixFunc prefix=%s err=%v", "user:", err)
 	}
 
 	// Verify only user: keys found
 	if len(found) != 3 {
-		t.Fatalf("Expected 3 user keys, got %d", len(found))
+		fatalf(t, "action=MapPrefixFunc prefix=%s expectedKeys=3 got=%d", "user:", len(found))
 	}
 
 	for k := range found {
 		if k == "admin:root" {
-			t.Fatal("Should not find admin:root with user: prefix")
+			fatalf(t, "action=MapPrefixFunc prefix=%s unexpectedKey=%s", "user:", k)
 		}
 	}
 
@@ -239,36 +239,36 @@ func TestSingleFileLSMCrashRecovery(t *testing.T) {
 	// Create store and write data
 	store, err := NewSingleFileLSM(dbPath, 4096, 1024*1024)
 	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
+		fatalf(t, "action=Create path=%s err=%v", dbPath, err)
 	}
 
 	testKey := []byte("test-key")
 	testValue := []byte("test-value")
 
 	if err := store.Put(testKey, testValue); err != nil {
-		t.Fatalf("Failed to put: %v", err)
+		fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(testKey), trimTo40(testValue), err)
 	}
 
 	// Close normally
 	if err := store.Close(); err != nil {
-		t.Fatalf("Failed to close: %v", err)
+		fatalf(t, "action=Close path=%s err=%v", dbPath, err)
 	}
 
 	// Reopen - should recover from WAL
 	store2, err := NewSingleFileLSM(dbPath, 4096, 1024*1024)
 	if err != nil {
-		t.Fatalf("Failed to reopen: %v", err)
+		fatalf(t, "action=Reopen path=%s err=%v", dbPath, err)
 	}
 	defer store2.Close()
 
 	// Verify data
 	val, err := store2.Get(testKey)
 	if err != nil {
-		t.Fatalf("Failed to get after recovery: %v", err)
+		fatalf(t, "action=Get key=%s err=%v", trimTo40(testKey), err)
 	}
 
 	if string(val) != string(testValue) {
-		t.Fatalf("Value mismatch after recovery: got %s, want %s", val, testValue)
+		fatalf(t, "action=Get key=%s expected=%s got=%s", trimTo40(testKey), trimTo40(testValue), trimTo40(val))
 	}
 
 	t.Log("SUCCESS: Crash recovery works correctly")
@@ -280,7 +280,7 @@ func TestSingleFileLSMFlush(t *testing.T) {
 
 	store, err := NewSingleFileLSM(dbPath, 4096, 1024*1024)
 	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
+		fatalf(t, "action=Create path=%s err=%v", dbPath, err)
 	}
 	defer store.Close()
 
@@ -289,13 +289,13 @@ func TestSingleFileLSMFlush(t *testing.T) {
 		key := []byte(fmt.Sprintf("key-%d", i))
 		value := []byte(fmt.Sprintf("value-%d-with-some-longer-content-to-fill-memtable", i))
 		if err := store.Put(key, value); err != nil {
-			t.Fatalf("Failed to put key %d: %v", i, err)
+			fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(key), trimTo40(value), err)
 		}
 	}
 
 	// Manually flush
 	if err := store.Flush(); err != nil {
-		t.Fatalf("Failed to flush: %v", err)
+		fatalf(t, "action=Flush err=%v", err)
 	}
 
 	// Verify data is still accessible
@@ -304,11 +304,11 @@ func TestSingleFileLSMFlush(t *testing.T) {
 
 	val, err := store.Get(key)
 	if err != nil {
-		t.Fatalf("Failed to get after flush: %v", err)
+		fatalf(t, "action=Get key=%s err=%v", trimTo40(key), err)
 	}
 
 	if string(val) != string(expectedValue) {
-		t.Fatalf("Value mismatch after flush: got %s, want %s", val, expectedValue)
+		fatalf(t, "action=Get key=%s expected=%s got=%s", trimTo40(key), trimTo40(expectedValue), trimTo40(val))
 	}
 
 	t.Log("SUCCESS: Flush works correctly")
@@ -321,20 +321,20 @@ func TestSingleFileLSMCorruptionHandling(t *testing.T) {
 	// Create and populate store
 	store, err := NewSingleFileLSM(dbPath, 4096, 1024*1024)
 	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
+		fatalf(t, "action=Create path=%s err=%v", dbPath, err)
 	}
 
 	for i := 0; i < 10; i++ {
 		key := []byte(fmt.Sprintf("key-%d", i))
 		value := []byte(fmt.Sprintf("value-%d", i))
 		if err := store.Put(key, value); err != nil {
-			t.Fatalf("Failed to put: %v", err)
+			fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(key), trimTo40(value), err)
 		}
 	}
 
 	// Flush to create SSTable
 	if err := store.Flush(); err != nil {
-		t.Fatalf("Failed to flush: %v", err)
+		fatalf(t, "action=Flush err=%v", err)
 	}
 
 	store.Close()
@@ -342,13 +342,13 @@ func TestSingleFileLSMCorruptionHandling(t *testing.T) {
 	// Corrupt the file (truncate it)
 	stat, err := os.Stat(dbPath)
 	if err != nil {
-		t.Fatalf("Failed to stat file: %v", err)
+		fatalf(t, "action=Stat path=%s err=%v", dbPath, err)
 	}
 
 	// Truncate to 75% of size
 	newSize := stat.Size() * 3 / 4
 	if err := os.Truncate(dbPath, newSize); err != nil {
-		t.Fatalf("Failed to truncate: %v", err)
+		fatalf(t, "action=Truncate path=%s size=%d err=%v", dbPath, newSize, err)
 	}
 
 	// Try to reopen - should handle corruption gracefully
@@ -365,16 +365,16 @@ func TestSingleFileLSMCorruptionHandling(t *testing.T) {
 	newValue := []byte("new-value")
 
 	if err := store2.Put(newKey, newValue); err != nil {
-		t.Fatalf("Failed to write after corruption: %v", err)
+		fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(newKey), trimTo40(newValue), err)
 	}
 
 	val, err := store2.Get(newKey)
 	if err != nil {
-		t.Fatalf("Failed to read new data: %v", err)
+		fatalf(t, "action=Get key=%s err=%v", trimTo40(newKey), err)
 	}
 
 	if string(val) != string(newValue) {
-		t.Fatalf("Value mismatch: got %s, want %s", val, newValue)
+		fatalf(t, "action=Get key=%s expected=%s got=%s", trimTo40(newKey), trimTo40(newValue), trimTo40(val))
 	}
 
 	t.Log("SUCCESS: Corruption handling works correctly")

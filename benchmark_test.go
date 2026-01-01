@@ -158,7 +158,7 @@ func runBenchmark(b *testing.B, creator StoreCreator, config *BenchConfig) *Benc
 	// Initialize store
 	store, err := creator.Creator(storePath, 4096, testFileCapacity) // 4KB block size
 	if err != nil {
-		b.Fatalf("Failed to create store %s: %v", creator.Name, err)
+		fatalf(b, "action=Create store=%s path=%s err=%v", creator.Name, storePath, err)
 	}
 	defer store.Close()
 
@@ -353,14 +353,14 @@ func BenchmarkHotspotAccess(b *testing.B) {
 			dir := b.TempDir()
 			store, err := creator.Creator(filepath.Join(dir, "store"), 4096, testFileCapacity)
 			if err != nil {
-				b.Fatalf("Failed to create store: %v", err)
+				fatalf(b, "action=Create store=%s path=%s err=%v", creator.Name, filepath.Join(dir, "store"), err)
 			}
 			defer store.Close()
 
 			// Insert hot spot keys
 			for _, key := range hotspotKeys {
 				if err := store.Put(key, randomBytes(1024, 1024)); err != nil {
-					b.Fatalf("Failed to insert hot spot key: %v", err)
+					fatalf(b, "action=Put key=%s valueSize=%d err=%v", trimTo40(key), 1024, err)
 				}
 			}
 

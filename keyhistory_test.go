@@ -18,7 +18,7 @@ func TestExtentKeyHistory(t *testing.T) {
 	// Create an ExtentKeyValueStore
 	store, err := ExtentCreator(storePath, 4096, testFileCapacity)
 	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
+		fatalf(t, "action=Create store=ExtentKV path=%s err=%v", storePath, err)
 	}
 	defer store.Close()
 
@@ -37,7 +37,7 @@ func TestExtentKeyHistory(t *testing.T) {
 
 	// Step 1: Put initial value
 	if err := store.Put(key, value1); err != nil {
-		t.Fatalf("Failed to put initial value: %v", err)
+		fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(key), trimTo40(value1), err)
 	}
 
 	store.Flush()
@@ -45,29 +45,29 @@ func TestExtentKeyHistory(t *testing.T) {
 	// Step 2: Get key history
 	history, err := store.KeyHistory(key)
 	if err != nil {
-		t.Fatalf("Failed to get key history: %v", err)
+		fatalf(t, "action=KeyHistory key=%s err=%v", trimTo40(key), err)
 	}
 
 	if len(history) != 1 {
-		t.Errorf("Expected 1 history entry, got %d", len(history))
+		fatalf(t, "action=KeyHistory key=%s expectedEntries=1 got=%d", trimTo40(key), len(history))
 	} else if !bytes.Equal(history[0], value1) {
-		t.Errorf("Value mismatch: expected %s, got %s", value1, history[0])
+		fatalf(t, "action=KeyHistory key=%s expected=%s got=%s", trimTo40(key), trimTo40(value1), trimTo40(history[0]))
 	}
 
 	// Step 3: Update value
 	if err := store.Put(key, value2); err != nil {
-		t.Fatalf("Failed to update value: %v", err)
+		fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(key), trimTo40(value2), err)
 	}
 
 	// Step 4: Get key history
 	history, err = store.KeyHistory(key)
 	if err != nil {
-		t.Fatalf("Failed to get key history: %v", err)
+		fatalf(t, "action=KeyHistory key=%s err=%v", trimTo40(key), err)
 	}
 
 	// Should have both values
 	if len(history) != 2 {
-		t.Errorf("Expected 2 history entries, got %d", len(history))
+		fatalf(t, "action=KeyHistory key=%s expectedEntries=2 got=%d", trimTo40(key), len(history))
 	}
 
 	// Check if values are in history
@@ -83,15 +83,15 @@ func TestExtentKeyHistory(t *testing.T) {
 	}
 
 	if !foundValue1 {
-		t.Errorf("Initial value not found in history")
+		fatalf(t, "action=KeyHistory key=%s missingValue=%s", trimTo40(key), trimTo40(value1))
 	}
 	if !foundValue2 {
-		t.Errorf("Updated value not found in history")
+		fatalf(t, "action=KeyHistory key=%s missingValue=%s", trimTo40(key), trimTo40(value2))
 	}
 
 	// Step 5: Delete key
 	if err := store.Delete(key); err != nil {
-		t.Fatalf("Failed to delete key: %v", err)
+		fatalf(t, "action=Delete key=%s err=%v", trimTo40(key), err)
 	}
 
 	// Step 6: Get key history
@@ -116,7 +116,7 @@ func TestEnsembleKeyHistory(t *testing.T) {
 	// Create an EnsembleKv store
 	store, err := EnsembleCreator(storePath, 4096, testFileCapacity, ExtentCreator)
 	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
+		fatalf(t, "action=Create store=EnsembleKV path=%s err=%v", storePath, err)
 	}
 	defer store.Close()
 
@@ -129,27 +129,27 @@ func TestEnsembleKeyHistory(t *testing.T) {
 
 	// Add multiple keys to spread across substores
 	if err := store.Put(key1, value1); err != nil {
-		t.Fatalf("Failed to put key1: %v", err)
+		fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(key1), trimTo40(value1), err)
 	}
 
 	if err := store.Put(key2, value2); err != nil {
-		t.Fatalf("Failed to put key2: %v", err)
+		fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(key2), trimTo40(value2), err)
 	}
 
 	// Update a key
 	if err := store.Put(key1, updatedValue); err != nil {
-		t.Fatalf("Failed to update key1: %v", err)
+		fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(key1), trimTo40(updatedValue), err)
 	}
 
 	// Get history for key1
 	history, err := store.KeyHistory(key1)
 	if err != nil {
-		t.Fatalf("Failed to get key history: %v", err)
+		fatalf(t, "action=KeyHistory key=%s err=%v", trimTo40(key1), err)
 	}
 
 	// Should have at least the updated value
 	if len(history) == 0 {
-		t.Errorf("No history entries found for key1")
+		fatalf(t, "action=KeyHistory key=%s expectedEntries>0 got=0", trimTo40(key1))
 	}
 
 	// Check if updated value is in history
@@ -162,7 +162,7 @@ func TestEnsembleKeyHistory(t *testing.T) {
 	}
 
 	if !foundUpdated {
-		t.Errorf("Updated value not found in history")
+		fatalf(t, "action=KeyHistory key=%s missingValue=%s", trimTo40(key1), trimTo40(updatedValue))
 	}
 }
 
@@ -214,13 +214,13 @@ func TestMultipleStoreTypes(t *testing.T) {
 	}
 
 	for _, sc := range storeCreators {
-		t.Run(sc.name, func(t *testing.T) {
+		runFailfast(t, sc.name, func(t *testing.T) {
 			storePath := filepath.Join(baseDir, sc.name)
 
 			// Create store
 			store, err := sc.creator(storePath)
 			if err != nil {
-				t.Fatalf("Failed to create %s store: %v", sc.name, err)
+				fatalf(t, "action=Create store=%s path=%s err=%v", sc.name, storePath, err)
 			}
 			defer store.Close()
 
@@ -231,17 +231,17 @@ func TestMultipleStoreTypes(t *testing.T) {
 
 			// Put initial value
 			if err := store.Put(key, value1); err != nil {
-				t.Fatalf("Failed to put initial value in %s: %v", sc.name, err)
+				fatalf(t, "action=Put store=%s key=%s value=%s err=%v", sc.name, trimTo40(key), trimTo40(value1), err)
 			}
 
 			// Get history - should have at least 1 value
 			history, err := store.KeyHistory(key)
 			if err != nil {
-				t.Fatalf("Failed to get history from %s: %v", sc.name, err)
+				fatalf(t, "action=KeyHistory store=%s key=%s err=%v", sc.name, trimTo40(key), err)
 			}
 
 			if len(history) == 0 {
-				t.Errorf("%s: No history entries found after initial put", sc.name)
+				fatalf(t, "action=KeyHistory store=%s key=%s expectedEntries>0 got=0", sc.name, trimTo40(key))
 			}
 
 			// Check if initial value is in history
@@ -254,18 +254,18 @@ func TestMultipleStoreTypes(t *testing.T) {
 			}
 
 			if !foundInitial {
-				t.Errorf("%s: Initial value not found in history", sc.name)
+				fatalf(t, "action=KeyHistory store=%s key=%s missingValue=%s", sc.name, trimTo40(key), trimTo40(value1))
 			}
 
 			// Update value
 			if err := store.Put(key, value2); err != nil {
-				t.Fatalf("Failed to update value in %s: %v", sc.name, err)
+				fatalf(t, "action=Put store=%s key=%s value=%s err=%v", sc.name, trimTo40(key), trimTo40(value2), err)
 			}
 
 			// Get history again
 			history, err = store.KeyHistory(key)
 			if err != nil {
-				t.Fatalf("Failed to get history after update from %s: %v", sc.name, err)
+				fatalf(t, "action=KeyHistory store=%s key=%s err=%v", sc.name, trimTo40(key), err)
 			}
 
 			// Check if updated value is in history
@@ -278,7 +278,7 @@ func TestMultipleStoreTypes(t *testing.T) {
 			}
 
 			if !foundUpdated {
-				t.Errorf("%s: Updated value not found in history", sc.name)
+				fatalf(t, "action=KeyHistory store=%s key=%s missingValue=%s", sc.name, trimTo40(key), trimTo40(value2))
 			}
 		})
 	}
@@ -294,7 +294,7 @@ func TestRecoverFromCorruption(t *testing.T) {
 	// Create the store
 	store, err := ExtentCreator(storePath, 4096, testFileCapacity) //FIXME filesize
 	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
+		fatalf(t, "action=Create store=ExtentKV path=%s err=%v", storePath, err)
 	}
 
 	// Define test key and values
@@ -305,21 +305,21 @@ func TestRecoverFromCorruption(t *testing.T) {
 
 	// Write a sequence of values to create history
 	if err := store.Put(key, value1); err != nil {
-		t.Fatalf("Failed to put first value: %v", err)
+		fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(key), trimTo40(value1), err)
 	}
 
 	if err := store.Put(key, value2); err != nil {
-		t.Fatalf("Failed to put second value: %v", err)
+		fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(key), trimTo40(value2), err)
 	}
 
 	if err := store.Put(key, value3); err != nil {
-		t.Fatalf("Failed to put third value: %v", err)
+		fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(key), trimTo40(value3), err)
 	}
 
 	// Verify history before corruption
 	history, err := store.KeyHistory(key)
 	if err != nil {
-		t.Fatalf("Failed to get history before corruption: %v", err)
+		fatalf(t, "action=KeyHistory key=%s err=%v", trimTo40(key), err)
 	}
 
 	t.Logf("Found %d history entries before corruption", len(history))
@@ -331,13 +331,13 @@ func TestRecoverFromCorruption(t *testing.T) {
 	indexPath := filepath.Join(storePath, "keys.index")
 	info, err := os.Stat(indexPath)
 	if err != nil {
-		t.Fatalf("Failed to stat index file: %v", err)
+		fatalf(t, "action=Stat path=%s err=%v", indexPath, err)
 	}
 
 	// Truncate to simulate corruption - remove the last entry
 	truncateSize := info.Size() - 8
 	if err := os.Truncate(indexPath, truncateSize); err != nil {
-		t.Fatalf("Failed to truncate index file: %v", err)
+		fatalf(t, "action=Truncate path=%s size=%d err=%v", indexPath, truncateSize, err)
 	}
 
 	t.Logf("Truncated index file from %d to %d bytes", info.Size(), truncateSize)
@@ -385,7 +385,7 @@ func TestLargeHistory(t *testing.T) {
 	// Create an ExtentKeyValueStore
 	store, err := ExtentCreator(storePath, 4096, testFileCapacity) //FIXME filesize
 	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
+		fatalf(t, "action=Create store=ExtentKV path=%s err=%v", storePath, err)
 	}
 	defer store.Close()
 
@@ -399,21 +399,21 @@ func TestLargeHistory(t *testing.T) {
 	for i := 0; i < valueCount; i++ {
 		values[i] = []byte(fmt.Sprintf("value_%d", i))
 		if err := store.Put(key, values[i]); err != nil {
-			t.Fatalf("Failed to put value %d: %v", i, err)
+			fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(key), trimTo40(values[i]), err)
 		}
 	}
 
 	// Get history
 	history, err := store.KeyHistory(key)
 	if err != nil {
-		t.Fatalf("Failed to get large history: %v", err)
+		fatalf(t, "action=KeyHistory key=%s err=%v", trimTo40(key), err)
 	}
 
 	t.Logf("Requested %d values, found %d history entries", valueCount, len(history))
 
 	// Check if we recovered a reasonable number of values
 	if len(history) < valueCount/2 {
-		t.Errorf("Expected at least %d history entries, got %d", valueCount/2, len(history))
+		fatalf(t, "action=KeyHistory key=%s expectedEntries>=%d got=%d", trimTo40(key), valueCount/2, len(history))
 	}
 
 	// Check some specific values
@@ -429,7 +429,7 @@ func TestLargeHistory(t *testing.T) {
 		}
 
 		if !found {
-			t.Errorf("Value %d not found in history", expectedVal)
+			fatalf(t, "action=KeyHistory key=%s missingValue=%s", trimTo40(key), trimTo40(expectedValue))
 		}
 	}
 }

@@ -609,27 +609,27 @@ func (s *ExtentMmapKeyValStore) forwardScanForKey(key []byte) ([]byte, error) {
 		if EnableIndexCaching {
 			s.cache.Store(string(key), false)
 		}
-		return nil, fmt.Errorf("forwardScanForKey: not found: %v", err)
+		return nil, fmt.Errorf("extentmmapkv.forwardScanForKey: not found: %w", err)
 	}
 
 	if !found {
 		if EnableIndexCaching {
 			s.cache.Store(string(key), false)
 		}
-		return nil, fmt.Errorf("forwardScanForKey: key not found or deleted")
+		return nil, fmt.Errorf("extentmmapkv.forwardScanForKey: key not found or deleted")
 	}
 
 	if keysIndexFileLength == offset {
 		if EnableIndexCaching {
 			s.cache.Store(string(key), false)
 		}
-		return nil, fmt.Errorf("forwardScanForKey: key not found or deleted because offset is at end of file")
+		return nil, fmt.Errorf("extentmmapkv.forwardScanForKey: key not found or deleted because offset is at end of file")
 	}
 
 	checkIndexSignsMmap(s.keysIndex, s.valuesIndex)
 	value, _, err := s.readDataAtIndexPos(offset, s.valuesIndex, s.valuesFile, s.valuesIndexCache)
 	if err != nil {
-		return nil, fmt.Errorf("forwardScanForKey: failed to read value: %v", err)
+		return nil, fmt.Errorf("extentmmapkv.forwardScanForKey: failed to read value: %w", err)
 	}
 
 	if EnableIndexCaching {
@@ -779,7 +779,7 @@ func (s *ExtentMmapKeyValStore) Get(key []byte) ([]byte, error) {
 
 	val, err := s.forwardScanForKey(key)
 	if err != nil {
-		return nil, fmt.Errorf("Get: %w", err)
+		return nil, fmt.Errorf("extentmmapkv.Get: %w", err)
 	}
 
 	return val, nil
@@ -792,12 +792,12 @@ func (s *ExtentMmapKeyValStore) readDataAtIndexPos(indexPosition int64, indexFil
 	var dataPos int64 = 0
 
 	if indexFileLength == indexPosition+8 {
-		panic(fmt.Errorf("readDataAtIndexPos: invalid index position, data file length is %d, and position is %d (this is the end of file marker, you read one too far)", indexFileLength, indexPosition))
+		panic(fmt.Errorf("extentmmapkv.readDataAtIndexPos: invalid index position, data file length is %d, and position is %d (this is the end of file marker, you read one too far)", indexFileLength, indexPosition))
 	}
 
 	if indexPosition+16 > indexFileLength {
 		panic(fmt.Sprintf("attempt to read past end of file: offset=%d, index file length len=%d.  Last index is the seocnd last pointer(len-16), not the last pointer(len-8)", indexPosition, indexFileLength))
-		return nil, false, fmt.Errorf("readDataAtIndexPos: invalid index position %v greater than indexfile of length %v", indexPosition, indexFileLength)
+		return nil, false, fmt.Errorf("extentmmapkv.readDataAtIndexPos: invalid index position %v greater than indexfile of length %v", indexPosition, indexFileLength)
 	}
 
 	if EnableIndexCaching && cache != nil {
@@ -805,12 +805,12 @@ func (s *ExtentMmapKeyValStore) readDataAtIndexPos(indexPosition int64, indexFil
 	} else {
 		_, err = indexFile.Seek(indexPosition, io.SeekStart)
 		if err != nil {
-			return nil, false, fmt.Errorf("failed to seek to index position: %w", err)
+			return nil, false, fmt.Errorf("extentmmapkv.readDataAtIndexPos: failed to seek to index position: %w", err)
 		}
 		err = binary.Read(indexFile, binary.BigEndian, &dataPos)
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to read data offset at index position: %v, length %v, file length %v, %v", indexPosition, 8, indexFileLength, err)
+		return nil, false, fmt.Errorf("extentmmapkv.readDataAtIndexPos: failed to read data offset at index position: %v, length %v, file length %v, %v", indexPosition, 8, indexFileLength, err)
 	}
 
 	if dataPos < 0 {
@@ -821,18 +821,18 @@ func (s *ExtentMmapKeyValStore) readDataAtIndexPos(indexPosition int64, indexFil
 	var nextDataPos int64
 	if EnableIndexCaching && cache != nil {
 		if indexPosition+16 > int64(len(cache)) {
-			return nil, false, fmt.Errorf("invalid index position %v for cache of length %v.  Probable attempted read on the last entry, but the last entry is always the closing entry", indexPosition, len(cache))
+			return nil, false, fmt.Errorf("extentmmapkv.readDataAtIndexPos: invalid index position %v for cache of length %v. Probable attempted read on the last entry, but the last entry is always the closing entry", indexPosition, len(cache))
 		}
 		err = binary.Read(bytes.NewReader(cache[indexPosition+8:indexPosition+16]), binary.BigEndian, &nextDataPos)
 	} else {
 		_, err = indexFile.Seek(indexPosition+8, io.SeekStart)
 		if err != nil {
-			return nil, false, fmt.Errorf("failed to seek to data position: %w", err)
+			return nil, false, fmt.Errorf("extentmmapkv.readDataAtIndexPos: failed to seek to data position: %w", err)
 		}
 		err = binary.Read(indexFile, binary.BigEndian, &nextDataPos)
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("readDataAtIndexPos: failed to read next index position: %w", err)
+		return nil, false, fmt.Errorf("extentmmapkv.readDataAtIndexPos: failed to read next index position: %w", err)
 	}
 
 	// Flip the sign if nextDataPos is negative (deleted key marker)
@@ -841,12 +841,12 @@ func (s *ExtentMmapKeyValStore) readDataAtIndexPos(indexPosition int64, indexFil
 	}
 
 	if nextDataPos > dataFileLength {
-		return nil, false, fmt.Errorf("invalid next data position %v for datafile of length %v", nextDataPos, dataFileLength)
+		return nil, false, fmt.Errorf("extentmmapkv.readDataAtIndexPos: invalid next data position %v for datafile of length %v", nextDataPos, dataFileLength)
 	}
 
 	size := nextDataPos - dataPos
 	if size < 0 {
-		return nil, false, fmt.Errorf("invalid size %v for dataPos %v and nextDataPos %v", size, dataPos, nextDataPos)
+		return nil, false, fmt.Errorf("extentmmapkv.readDataAtIndexPos: invalid size %v for dataPos %v and nextDataPos %v (indexPos=%d dataLen=%d)", size, dataPos, nextDataPos, indexPosition, dataFileLength)
 	}
 
 	if size == 0 {
@@ -856,11 +856,11 @@ func (s *ExtentMmapKeyValStore) readDataAtIndexPos(indexPosition int64, indexFil
 	buffer := make([]byte, size)
 	_, err = dataFile.Seek(dataPos, io.SeekStart)
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to seek to data position: %w", err)
+		return nil, false, fmt.Errorf("extentmmapkv.readDataAtIndexPos: failed to seek to data position: %w", err)
 	}
 	_, err = dataFile.Read(buffer)
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to read data: %w", err)
+		return nil, false, fmt.Errorf("extentmmapkv.readDataAtIndexPos: failed to read data: %w", err)
 	}
 
 	return buffer, deleted, nil

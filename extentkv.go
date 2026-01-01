@@ -373,9 +373,10 @@ func NewExtentKeyValueStore(directory string, blockSize, filesize int64) (*Exten
 	panicOnError("Open values data file", err)
 
 	// Values index file length must be a multiple of 8
-	stat, _ = valuesIndex.Stat()
+	stat, err = valuesIndex.Stat()
+	panicOnError("Stat values index file", err)
 	if stat.Size()%8 != 0 {
-		panic("Values index file length is not a multiple of 8")
+		goof.Panicf("Values index file length is not a multiple of 8: %d", stat.Size())
 	}
 
 	// Values index file must contain at least one entry
@@ -564,28 +565,28 @@ func (s *ExtentKeyValStore) forwardScanForKey(key []byte) ([]byte, error) {
 		if EnableIndexCaching {
 			s.existsCache.Store(string(key), false)
 		}
-		return nil, fmt.Errorf("forwardScanForKey: not found: %v", err)
+		return nil, fmt.Errorf("extentkv.forwardScanForKey: not found: %w", err)
 	}
 
 	if !found {
 		if EnableIndexCaching {
 			s.existsCache.Store(string(key), false)
 		}
-		return nil, fmt.Errorf("forwardScanForKey: key not found or deleted")
+		return nil, fmt.Errorf("extentkv.forwardScanForKey: key not found or deleted")
 	}
 
 	if keysIndexFileLength == offset {
 		if EnableIndexCaching {
 			s.existsCache.Store(string(key), false)
 		}
-		return nil, fmt.Errorf("forwardScanForKey: key not found or deleted because offset is at end of file")
+		return nil, fmt.Errorf("extentkv.forwardScanForKey: key not found or deleted because offset is at end of file")
 	}
 
 	debugln("forwardScanForKey: Retrieving value for key", trimTo40(key), "at offset", offset)
 	checkIndexSigns(s.keysIndex, s.valuesIndex)
 	value, _, startPos, endPos, err := s.readDataAtIndexPos(offset, s.valuesIndex, s.valuesFile, s.valuesIndexCache)
 	if err != nil {
-		return nil, fmt.Errorf("forwardScanForKey: failed to read value: %v", err)
+		return nil, fmt.Errorf("extentkv.forwardScanForKey: failed to read value: %w", err)
 	}
 
 	/* FIXME - something is writing the value positions as negative and flagging the values as deleted, when they should not be
@@ -852,7 +853,7 @@ func (s *ExtentKeyValStore) Get(key []byte) ([]byte, error) {
 
 	val, err := s.forwardScanForKey(key) // We should add a found return value
 	if err != nil {
-		return nil, fmt.Errorf("Get: %w", err)
+	return nil, fmt.Errorf("extentkv.Get: %w", err)
 	}
 
 	return val, nil
@@ -876,12 +877,12 @@ func (s *ExtentKeyValStore) readDataAtIndexPos(indexPosition int64, indexFile *o
 	var dataPos int64 = 0
 
 	if indexFileLength == indexPosition+8 {
-		panic(fmt.Errorf("readDataAtIndexPos: invalid index position, data file length is %d, and position is %d (this is the end of file marker, you read one too far)", indexFileLength, indexPosition))
+		panic(fmt.Errorf("extentkv.readDataAtIndexPos: invalid index position, data file length is %d, and position is %d (this is the end of file marker, you read one too far)", indexFileLength, indexPosition))
 	}
 
 	if indexPosition+16 > indexFileLength {
 		panic(fmt.Sprintf("attempt to read past end of file: offset=%d, index file length len=%d.  Last index is the seocnd last pointer(len-16), not the last pointer(len-8)", indexPosition, indexFileLength))
-		return nil, false, 0, 0, fmt.Errorf("readDataAtIndexPos: invalid index position %v greater than indexfile of length %v", indexPosition, indexFileLength)
+		return nil, false, 0, 0, fmt.Errorf("extentkv.readDataAtIndexPos: invalid index position %v greater than indexfile of length %v", indexPosition, indexFileLength)
 	}
 
 	// Read from cache or file
@@ -892,13 +893,13 @@ func (s *ExtentKeyValStore) readDataAtIndexPos(indexPosition int64, indexFile *o
 	} else {
 		_, err = indexFile.Seek(indexPosition, 0)
 		if err != nil {
-			return nil, false, 0, 0, fmt.Errorf("failed to seek to index position: %w", err)
+			return nil, false, 0, 0, fmt.Errorf("extentkv.readDataAtIndexPos: failed to seek to index position: %w", err)
 		}
 		//Read the offset to the data
 		err = binary.Read(indexFile, binary.BigEndian, &dataPos)
 	}
 	if err != nil {
-		return nil, false, 0, 0, fmt.Errorf("failed to read data offset at index position: %v, length %v, file length %v, %v", indexPosition, 8, indexFileLength, err)
+		return nil, false, 0, 0, fmt.Errorf("extentkv.readDataAtIndexPos: failed to read data offset at index position: %v, length %v, file length %v, %v", indexPosition, 8, indexFileLength, err)
 	}
 
 	if dataPos < 0 {
@@ -910,20 +911,20 @@ func (s *ExtentKeyValStore) readDataAtIndexPos(indexPosition int64, indexFile *o
 	var nextDataPos int64
 	if EnableIndexCaching && cache != nil {
 		if indexPosition+16 > int64(len(cache)) {
-			return nil, false, 0, 0, fmt.Errorf("invalid index position %v for cache of length %v.  Probable attempted read on the last entry, but the last entry is always the closing entry", indexPosition, len(cache))
+			return nil, false, 0, 0, fmt.Errorf("extentkv.readDataAtIndexPos: invalid index position %v for cache of length %v. Probable attempted read on the last entry, but the last entry is always the closing entry", indexPosition, len(cache))
 		}
 		//Read the offset to the next data block (or EOF offset i.e. file length.  The last index entry always points to the end of the data file)
 		err = binary.Read(bytes.NewReader(cache[indexPosition+8:indexPosition+16]), binary.BigEndian, &nextDataPos)
 	} else {
 		_, err = indexFile.Seek(indexPosition+8, 0)
 		if err != nil {
-			return nil, false, 0, 0, fmt.Errorf("failed to seek to data position: %w", err)
+			return nil, false, 0, 0, fmt.Errorf("extentkv.readDataAtIndexPos: failed to seek to data position: %w", err)
 		}
 		// Read the offset to the next data block (or EOF offset i.e. file length.  The last index entry always points to the end of the data file)
 		err = binary.Read(indexFile, binary.BigEndian, &nextDataPos)
 	}
 	if err != nil {
-		return nil, false, 0, 0, fmt.Errorf("readDataAtIndexPos: failed to read next index position: %w", err)
+		return nil, false, 0, 0, fmt.Errorf("extentkv.readDataAtIndexPos: failed to read next index position: %w", err)
 	}
 
 	if nextDataPos < 0 {
@@ -931,12 +932,12 @@ func (s *ExtentKeyValStore) readDataAtIndexPos(indexPosition int64, indexFile *o
 	}
 
 	if nextDataPos > dataFileLength {
-		return nil, false, 0, 0, fmt.Errorf("invalid next data position %v for datafile of length %v", nextDataPos, dataFileLength)
+		return nil, false, 0, 0, fmt.Errorf("extentkv.readDataAtIndexPos: invalid next data position %v for datafile of length %v", nextDataPos, dataFileLength)
 	}
 
 	size := nextDataPos - dataPos
 	if size < 0 {
-		return nil, false, 0, 0, fmt.Errorf("invalid size %v for dataPos %v and nextDataPos %v", size, dataPos, nextDataPos)
+		return nil, false, 0, 0, fmt.Errorf("extentkv.readDataAtIndexPos: invalid size %v for dataPos %v and nextDataPos %v (indexPos=%d dataLen=%d)", size, dataPos, nextDataPos, indexPosition, dataFileLength)
 	}
 
 	//Don't read if the size is 0, we already know what the contents will be :D
@@ -947,11 +948,11 @@ func (s *ExtentKeyValStore) readDataAtIndexPos(indexPosition int64, indexFile *o
 	buffer := make([]byte, size)
 	_, err = dataFile.Seek(dataPos, 0)
 	if err != nil {
-		return nil, false, 0, 0, fmt.Errorf("failed to seek to data position: %w", err)
+		return nil, false, 0, 0, fmt.Errorf("extentkv.readDataAtIndexPos: failed to seek to data position: %w", err)
 	}
 	_, err = dataFile.Read(buffer)
 	if err != nil {
-		return nil, false, 0, 0, fmt.Errorf("failed to read data: %w", err)
+		return nil, false, 0, 0, fmt.Errorf("extentkv.readDataAtIndexPos: failed to read data: %w", err)
 	}
 
 	return buffer, deleted, dataPos, nextDataPos, nil

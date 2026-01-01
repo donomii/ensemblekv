@@ -15,7 +15,7 @@ func TestCrashRecoveryCorruption(t *testing.T) {
 	// Create a new store
 	store, err := NewExtentMmapKeyValueStore(tmpDir, 4096, 1024*1024)
 	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
+		fatalf(t, "action=Create store=ExtentMmap path=%s err=%v", tmpDir, err)
 	}
 	
 	// Write some test data
@@ -23,40 +23,40 @@ func TestCrashRecoveryCorruption(t *testing.T) {
 	testValue := []byte("test-value")
 	
 	if err := store.Put(testKey, testValue); err != nil {
-		t.Fatalf("Failed to put test data: %v", err)
+		fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(testKey), trimTo40(testValue), err)
 	}
 	
 	// Verify we can read it back
 	val, err := store.Get(testKey)
 	if err != nil {
-		t.Fatalf("Failed to get test data: %v", err)
+		fatalf(t, "action=Get key=%s err=%v", trimTo40(testKey), err)
 	}
 	if string(val) != string(testValue) {
-		t.Fatalf("Got wrong value: expected %s, got %s", testValue, val)
+		fatalf(t, "action=Get key=%s expected=%s got=%s", trimTo40(testKey), trimTo40(testValue), trimTo40(val))
 	}
 	
 	// Close the store
 	if err := store.Close(); err != nil {
-		t.Fatalf("Failed to close store: %v", err)
+		fatalf(t, "action=Close path=%s err=%v", tmpDir, err)
 	}
 	
 	// Now simulate corruption: truncate the values data file to be smaller than what the index expects
 	valuesPath := filepath.Join(tmpDir, "values.dat")
 	stat, err := os.Stat(valuesPath)
 	if err != nil {
-		t.Fatalf("Failed to stat values file: %v", err)
+		fatalf(t, "action=Stat path=%s err=%v", valuesPath, err)
 	}
 	
 	// Truncate to 50% of original size to simulate incomplete write
 	newSize := stat.Size() / 2
 	if err := os.Truncate(valuesPath, newSize); err != nil {
-		t.Fatalf("Failed to truncate values file: %v", err)
+		fatalf(t, "action=Truncate path=%s size=%d err=%v", valuesPath, newSize, err)
 	}
 	
 	// Reopen the store - this should NOT crash despite the corruption
 	store2, err := NewExtentMmapKeyValueStore(tmpDir, 4096, 1024*1024)
 	if err != nil {
-		t.Fatalf("Failed to reopen corrupted store: %v", err)
+		fatalf(t, "action=Reopen path=%s err=%v", tmpDir, err)
 	}
 	defer store2.Close()
 	
@@ -75,15 +75,15 @@ func TestCrashRecoveryCorruption(t *testing.T) {
 	newValue := []byte("new-value")
 	
 	if err := store2.Put(newKey, newValue); err != nil {
-		t.Fatalf("Failed to put new data after corruption: %v", err)
+		fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(newKey), trimTo40(newValue), err)
 	}
 	
 	val3, err := store2.Get(newKey)
 	if err != nil {
-		t.Fatalf("Failed to get new data after corruption: %v", err)
+		fatalf(t, "action=Get key=%s err=%v", trimTo40(newKey), err)
 	}
 	if string(val3) != string(newValue) {
-		t.Fatalf("Got wrong value for new key: expected %s, got %s", newValue, val3)
+		fatalf(t, "action=Get key=%s expected=%s got=%s", trimTo40(newKey), trimTo40(newValue), trimTo40(val3))
 	}
 	
 	t.Log("SUCCESS: Database handled corruption gracefully and continues to work")
@@ -95,7 +95,7 @@ func TestMultipleCorruptedEntries(t *testing.T) {
 	
 	store, err := NewExtentMmapKeyValueStore(tmpDir, 4096, 1024*1024)
 	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
+		fatalf(t, "action=Create store=ExtentMmap path=%s err=%v", tmpDir, err)
 	}
 	
 	// Write multiple keys
@@ -103,7 +103,7 @@ func TestMultipleCorruptedEntries(t *testing.T) {
 		key := []byte("key-" + string(rune('0'+i)))
 		value := []byte("value-" + string(rune('0'+i)))
 		if err := store.Put(key, value); err != nil {
-			t.Fatalf("Failed to put key %d: %v", i, err)
+			fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(key), trimTo40(value), err)
 		}
 	}
 	
@@ -112,13 +112,13 @@ func TestMultipleCorruptedEntries(t *testing.T) {
 	// Corrupt the values file significantly
 	valuesPath := filepath.Join(tmpDir, "values.dat")
 	if err := os.Truncate(valuesPath, 10); err != nil {
-		t.Fatalf("Failed to truncate values file: %v", err)
+		fatalf(t, "action=Truncate path=%s size=%d err=%v", valuesPath, 10, err)
 	}
 	
 	// Reopen and try to list all keys
 	store2, err := NewExtentMmapKeyValueStore(tmpDir, 4096, 1024*1024)
 	if err != nil {
-		t.Fatalf("Failed to reopen store: %v", err)
+		fatalf(t, "action=Reopen path=%s err=%v", tmpDir, err)
 	}
 	defer store2.Close()
 	
@@ -134,7 +134,7 @@ func TestMultipleCorruptedEntries(t *testing.T) {
 	newKey := []byte("recovery-test")
 	newValue := []byte("recovery-value")
 	if err := store2.Put(newKey, newValue); err != nil {
-		t.Fatalf("Failed to write after massive corruption: %v", err)
+		fatalf(t, "action=Put key=%s value=%s err=%v", trimTo40(newKey), trimTo40(newValue), err)
 	}
 	
 	t.Log("SUCCESS: Database survived multiple corrupted entries")

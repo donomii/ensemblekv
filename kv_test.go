@@ -3,7 +3,6 @@ package ensemblekv
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 )
@@ -32,7 +31,7 @@ func StartKVStoreOperations(t *testing.T, creator CreatorFunc, storeName string)
 			// Create store
 			store, err := creator(storePath, blockSize, testFileCapacity)
 			if err != nil {
-				t.Fatalf("Failed to create store: %v", err)
+				fatalf(t, "store=%s action=CreateError path=%s blockSize=%d fileSize=%d err=%v", storeName, storePath, blockSize, testFileCapacity, err)
 			}
 			defer store.Close()
 
@@ -42,7 +41,7 @@ func StartKVStoreOperations(t *testing.T, creator CreatorFunc, storeName string)
 			FuzzKeyValueOperations(t, store, storeName)
 
 			// Run persistence tests
-			t.Run("Persistence", func(t *testing.T) {
+			runFailfast(t, "Persistence", func(t *testing.T) {
 				PersistenceTests(t, store, creator, storePath, blockSize, int64(maxTestSize))
 			})
 
@@ -57,7 +56,7 @@ func StartKVStoreOperations(t *testing.T, creator CreatorFunc, storeName string)
 	// Wait for either completion or timeout
 	select {
 	case <-timer.C:
-		t.Fatal("Test timed out")
+		fatalf(t, "action=Timeout duration=%s", testTimeout)
 	case <-done:
 		timer.Stop()
 	}
@@ -78,115 +77,110 @@ func PersistenceTests(t *testing.T, store KvLike, creator CreatorFunc, storePath
 	}
 
 	// Phase 1: Initial data insertion
-	t.Run("Phase1_InitialInsert", func(t *testing.T) {
+	runFailfast(t, "Phase1_InitialInsert", func(t *testing.T) {
 		for key, value := range testData {
 			err := store.Put([]byte(key), value)
 			if err != nil {
-				t.Fatalf("Failed to put initial data for key %s: %v", key, err)
+				fatalf(t, "action=PutError key=%s value=%s err=%v", key, trimTo40(value), err)
 			}
 		}
 
 		// Close and reopen
 		err := store.Close()
 		if err != nil {
-			t.Fatalf("Failed to close store: %v", err)
+			fatalf(t, "action=CloseError path=%s err=%v", storePath, err)
 		}
 
 		store, err = creator(storePath, blockSize, fileSize)
 		if err != nil {
-			t.Fatalf("Failed to reopen store: %v", err)
+			fatalf(t, "action=ReopenError path=%s blockSize=%d fileSize=%d err=%v", storePath, blockSize, fileSize, err)
 		}
 
 		// Verify all initial data
 		for key, expectedValue := range testData {
 			exists := store.Exists([]byte(key))
 			if !exists {
-				t.Errorf("Key %s doesn't exist after reopening", key)
+				fatalf(t, "action=ExistsMismatch key=%s expected=true got=false", key)
 				continue
 			}
 
 			value, err := store.Get([]byte(key))
 			if err != nil {
-				t.Errorf("Failed to get key %s after reopening: %v", key, err)
+				fatalf(t, "action=GetError key=%s err=%v", key, err)
 				continue
 			}
 
 			if !bytes.Equal(value, expectedValue) {
-				t.Errorf("Value mismatch for key %s after reopening", key)
-				t.Errorf("Expected: %v", trimTo40(expectedValue))
-				t.Errorf("Got: %v", trimTo40(value))
-				t.Errorf("Expected length: %d", len(expectedValue))
-				t.Errorf("Got length: %d", len(value))
+				fatalf(t, "action=GetMismatch key=%s expected=%s got=%s expectedLen=%d gotLen=%d", key, trimTo40(expectedValue), trimTo40(value), len(expectedValue), len(value))
 			}
 		}
 	})
 
 	// Phase 2: Test Delete persistence
-	t.Run("Phase2_DeletePersistence", func(t *testing.T) {
+	runFailfast(t, "Phase2_DeletePersistence", func(t *testing.T) {
 		// Delete a key
 		err := store.Delete([]byte("keyToDelete"))
 		if err != nil {
-			t.Fatalf("Failed to delete key: %v", err)
+			fatalf(t, "action=DeleteError key=%s err=%v", "keyToDelete", err)
 		}
 
 		// Close and reopen
 		err = store.Close()
 		if err != nil {
-			t.Fatalf("Failed to close store: %v", err)
+			fatalf(t, "action=CloseError path=%s err=%v", storePath, err)
 		}
 
 		store, err = creator(storePath, blockSize, fileSize)
 		if err != nil {
-			t.Fatalf("Failed to reopen store: %v", err)
+			fatalf(t, "action=ReopenError path=%s blockSize=%d fileSize=%d err=%v", storePath, blockSize, fileSize, err)
 		}
 
 		// Verify deletion persisted
 		exists := store.Exists([]byte("keyToDelete"))
 		if exists {
-			t.Error("Deleted key still exists after reopening")
+			fatalf(t, "action=ExistsMismatch key=%s expected=false got=true", "keyToDelete")
 		}
 
 		_, err = store.Get([]byte("keyToDelete"))
 		if err == nil {
-			t.Error("Expected error getting deleted key, got nil")
+			fatalf(t, "action=GetUnexpectedSuccess key=%s expectedErr=true gotErr=false", "keyToDelete")
 		}
 	})
 
 	// Phase 3: Test Update persistence
-	t.Run("Phase3_UpdatePersistence", func(t *testing.T) {
+	runFailfast(t, "Phase3_UpdatePersistence", func(t *testing.T) {
 		newValue := []byte("updated value")
 		err := store.Put([]byte("keyToUpdate"), newValue)
 		if err != nil {
-			t.Fatalf("Failed to update key: %v", err)
+			fatalf(t, "action=PutError key=%s value=%s err=%v", "keyToUpdate", trimTo40(newValue), err)
 		}
 
 		fmt.Println("Closing store after update")
 		// Close and reopen
 		err = store.Close()
 		if err != nil {
-			t.Fatalf("Failed to close store: %v", err)
+			fatalf(t, "action=CloseError path=%s err=%v", storePath, err)
 		}
 
 		fmt.Println("Reopening store" + storePath + " after update")
 		store, err = creator(storePath, blockSize, fileSize)
 		if err != nil {
-			t.Fatalf("Failed to reopen store: %v", err)
+			fatalf(t, "action=ReopenError path=%s blockSize=%d fileSize=%d err=%v", storePath, blockSize, fileSize, err)
 		}
 
 		// Verify update persisted
 		value, err := store.Get([]byte("keyToUpdate"))
 		if err != nil {
-			t.Fatalf("Failed to get updated key: %v", err)
+			fatalf(t, "action=GetError key=%s err=%v", "keyToUpdate", err)
 		}
 
 		if !bytes.Equal(value, newValue) {
-			msg := fmt.Sprintf("Value mismatch for updated key. Expected: %v, Got: %v", string(newValue), string(value))
-			t.Error(msg)
+			fatalf(t, "action=GetMismatch key=%s expected=%s got=%s", "keyToUpdate", trimTo40(newValue), trimTo40(value))
 		}
 	})
 
 	// Phase 4: Test mixed operations persistence
-	t.Run("Phase4_MixedOperations", func(t *testing.T) {
+	runFailfast(t, "Phase4_MixedOperations", func(t *testing.T) {
 		// Perform a mix of operations
 		operations := []struct {
 			op    string
@@ -204,12 +198,12 @@ func PersistenceTests(t *testing.T, store KvLike, creator CreatorFunc, storePath
 			case "put":
 				err := store.Put([]byte(op.key), op.value)
 				if err != nil {
-					t.Fatalf("Failed to put key %s: %v", op.key, err)
+					fatalf(t, "action=PutError key=%s value=%s err=%v", op.key, trimTo40(op.value), err)
 				}
 			case "delete":
 				err := store.Delete([]byte(op.key))
 				if err != nil {
-					t.Fatalf("Failed to delete key %s: %v", op.key, err)
+					fatalf(t, "action=DeleteError key=%s err=%v", op.key, err)
 				}
 			}
 		}
@@ -217,12 +211,12 @@ func PersistenceTests(t *testing.T, store KvLike, creator CreatorFunc, storePath
 		// Close and reopen
 		err := store.Close()
 		if err != nil {
-			t.Fatalf("Failed to close store: %v", err)
+			fatalf(t, "action=CloseError path=%s err=%v", storePath, err)
 		}
 
 		store, err = creator(storePath, blockSize, fileSize)
 		if err != nil {
-			t.Fatalf("Failed to reopen store: %v", err)
+			fatalf(t, "action=ReopenError path=%s blockSize=%d fileSize=%d err=%v", storePath, blockSize, fileSize, err)
 		}
 
 		// Verify all operations persisted
@@ -232,23 +226,23 @@ func PersistenceTests(t *testing.T, store KvLike, creator CreatorFunc, storePath
 			switch op.op {
 			case "put":
 				if !exists {
-					t.Errorf("Key %s missing after mixed operations", op.key)
+					fatalf(t, "action=ExistsMismatch key=%s expected=true got=false op=%s", op.key, op.op)
 					continue
 				}
 
 				value, err := store.Get([]byte(op.key))
 				if err != nil {
-					t.Errorf("Failed to get key %s after mixed operations: %v", op.key, err)
+					fatalf(t, "action=GetError key=%s err=%v", op.key, err)
 					continue
 				}
 
 				if !bytes.Equal(value, op.value) {
-					t.Errorf("Value mismatch for key %s after mixed operations", op.key)
+					fatalf(t, "action=GetMismatch key=%s expected=%s got=%s", op.key, trimTo40(op.value), trimTo40(value))
 				}
 
 			case "delete":
 				if exists {
-					t.Errorf("Deleted key %s still exists after mixed operations", op.key)
+					fatalf(t, "action=ExistsMismatch key=%s expected=false got=true op=%s", op.key, op.op)
 				}
 			}
 		}
@@ -257,7 +251,7 @@ func PersistenceTests(t *testing.T, store KvLike, creator CreatorFunc, storePath
 	// Clean up
 	err := store.Close()
 	if err != nil {
-		t.Fatalf("Failed to close store during cleanup: %v", err)
+		fatalf(t, "action=CloseError path=%s err=%v", storePath, err)
 	}
 }
 
@@ -283,7 +277,7 @@ func MixedSizeKeyValuePairs(t *testing.T, store KvLike, storeName string) {
 			continue
 		}
 
-		t.Run(fmt.Sprintf("Size_%dx%d", size.keySize, size.valueSize), func(t *testing.T) {
+		runFailfast(t, fmt.Sprintf("Size_%dx%d", size.keySize, size.valueSize), func(t *testing.T) {
 			key := randomBytes(size.keySize, size.keySize)
 			value := randomBytes(size.valueSize, size.valueSize)
 
@@ -291,33 +285,32 @@ func MixedSizeKeyValuePairs(t *testing.T, store KvLike, storeName string) {
 			//fmt.Println("Putting key: ", trimTo40(key))
 			err := store.Put(key, value)
 			if err != nil {
-				t.Fatalf("Failed to put %dx%d pair: %v", size.keySize, size.valueSize, err)
+				fatalf(t, "action=PutError keySize=%d valueSize=%d key=%s err=%v", size.keySize, size.valueSize, trimTo40(key), err)
 			}
 
 			// Test Get
 			//fmt.Printf("Getting key: %v\n", trimTo40(key))
 			retrieved, err := store.Get(key)
 			if err != nil {
-				t.Fatalf("Failed to get %dx%d pair(%v): %v", size.keySize, size.valueSize, trimTo40(key), err)
+				fatalf(t, "action=GetError keySize=%d valueSize=%d key=%s err=%v", size.keySize, size.valueSize, trimTo40(key), err)
 			}
 
 			if !bytes.Equal(retrieved, value) {
-				t.Errorf("Value mismatch for %dx%d pair (%v) expected: %v, got: %v", size.keySize, size.valueSize, trimTo40(key), trimTo40(value), trimTo40(retrieved))
+				fatalf(t, "action=GetMismatch keySize=%d valueSize=%d key=%s expected=%s got=%s", size.keySize, size.valueSize, trimTo40(key), trimTo40(value), trimTo40(retrieved))
 			}
 
 			// Test Delete
 			//fmt.Printf("Deleting key: %v\n", trimTo40(key))
 			err = store.Delete(key)
 			if err != nil {
-				t.Fatalf("Failed to delete %dx%d pair: %v", size.keySize, size.valueSize, err)
+				fatalf(t, "action=DeleteError keySize=%d valueSize=%d key=%s err=%v", size.keySize, size.valueSize, trimTo40(key), err)
 			}
 
 			// Verify deletion
 			if store.Exists(key) {
 				store.DumpIndex()
 				fmt.Printf("Key: %v still exists after deletion\n", trimTo40(key))
-				t.Error("Key still exists after deletion")
-				os.Exit(0)
+				fatalf(t, "action=DeleteStillExists key=%s expected=false got=true", trimTo40(key))
 			}
 		})
 	}
@@ -373,7 +366,7 @@ var wrapperTypes = []struct {
 func TestAllStores(t *testing.T) {
 	// Test base stores
 	for _, base := range baseStores {
-		t.Run(base.name, func(t *testing.T) {
+		runFailfast(t, base.name, func(t *testing.T) {
 			StartKVStoreOperations(t, base.creator, base.name)
 		})
 	}
@@ -382,7 +375,7 @@ func TestAllStores(t *testing.T) {
 	for _, wrapper := range wrapperTypes {
 		for _, base := range baseStores {
 			name := fmt.Sprintf("%sLSM%s", wrapper.name, base.name)
-			t.Run(name, func(t *testing.T) {
+			runFailfast(t, name, func(t *testing.T) {
 				creator := wrapper.createWrapper(base.creator)
 				StartKVStoreOperations(t, creator, name)
 			})

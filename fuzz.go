@@ -130,7 +130,7 @@ func GetDBLimits(storeName string) DBLimits {
 func FuzzKeyValueOperations(t *testing.T, store KvLike, storeName string) {
 	limits := GetDBLimits(storeName)
 
-	t.Run("FuzzTestRandomOperations", func(t *testing.T) {
+	runFailfast(t, "FuzzTestRandomOperations", func(t *testing.T) {
 		rand.Seed(time.Now().UnixNano())
 		numOperations := rand.Intn(maxOperations-minOperations) + minOperations
 
@@ -154,7 +154,7 @@ func FuzzKeyValueOperations(t *testing.T, store KvLike, storeName string) {
 
 				if err != nil {
 					ringBuffer.Dump()
-					t.Fatalf("[%s] Failed to put key/value pair: %v", limits.name, err)
+					fatalf(t, "store=%s op=%d action=PutError key=%s value=%s err=%v", limits.name, i+1, trimTo40(key), trimTo40(value), err)
 				}
 				keys[string(key)] = value
 
@@ -172,13 +172,13 @@ func FuzzKeyValueOperations(t *testing.T, store KvLike, storeName string) {
 				if err != nil {
 					ringBuffer.Dump()
 					store.DumpIndex()
-					t.Fatalf("[%s] Failed to get key: %s, %v", limits.name, trimTo40([]byte(randomKey)), err)
+					fatalf(t, "store=%s op=%d action=GetError key=%s expected=%s err=%v", limits.name, i+1, trimTo40([]byte(randomKey)), trimTo40(expectedValue), err)
 				}
 
 				if !bytes.Equal(retrievedValue, expectedValue) {
 					ringBuffer.Dump()
-					t.Errorf("[%s] Value mismatch for key %s. Expected: %s, Got: %s",
-						limits.name, trimTo40([]byte(randomKey)), trimTo40(expectedValue), trimTo40(retrievedValue))
+					fatalf(t, "store=%s op=%d action=GetMismatch key=%s expected=%s got=%s",
+						limits.name, i+1, trimTo40([]byte(randomKey)), trimTo40(expectedValue), trimTo40(retrievedValue))
 				}
 
 			case 2: // Delete
@@ -193,14 +193,14 @@ func FuzzKeyValueOperations(t *testing.T, store KvLike, storeName string) {
 
 				if err != nil {
 					ringBuffer.Dump()
-					t.Fatalf("[%s] Failed to delete key: %v", limits.name, err)
+					fatalf(t, "store=%s op=%d action=DeleteError key=%s err=%v", limits.name, i+1, trimTo40([]byte(randomKey)), err)
 				}
 
 				delete(keys, randomKey)
 
 				if store.Exists([]byte(randomKey)) {
 					ringBuffer.Dump()
-					t.Errorf("[%s] Key %s still exists after deletion", limits.name, trimTo40([]byte(randomKey)))
+					fatalf(t, "store=%s op=%d action=DeleteStillExists key=%s exists=true", limits.name, i+1, trimTo40([]byte(randomKey)))
 				}
 			}
 		}
@@ -219,7 +219,7 @@ func getRandomKey(m map[string][]byte) string {
 func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
 	limits := GetDBLimits(storeName)
 
-	t.Run("Basic Put and Get", func(t *testing.T) {
+	runFailfast(t, "Basic Put and Get", func(t *testing.T) {
 		key := []byte("test_key")
 		value := []byte("test_value")
 
@@ -227,22 +227,22 @@ func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
 		err := store.Put(key, value)
 		if err != nil {
 			store.DumpIndex()
-			t.Fatalf("Failed to PUT key/value pair: %v", err)
+			fatalf(t, "store=%s action=PutError key=%s value=%s err=%v", storeName, trimTo40(key), trimTo40(value), err)
 		}
 
 		fmt.Printf("Getting key %v\n", trimTo40(key))
 		retrieved, err := store.Get(key)
 		if err != nil {
 			store.DumpIndex()
-			t.Fatalf("Failed to GET value(%v): %v", trimTo40(key), err)
+			fatalf(t, "store=%s action=GetError key=%s err=%v", storeName, trimTo40(key), err)
 		}
 
 		if !bytes.Equal(retrieved, value) {
-			t.Errorf("Value mismatch. Expected %s, got %s", value, retrieved)
+			fatalf(t, "store=%s action=GetMismatch key=%s expected=%s got=%s", storeName, trimTo40(key), trimTo40(value), trimTo40(retrieved))
 		}
 	})
 
-	t.Run("Large Key-Value Pairs", func(t *testing.T) {
+	runFailfast(t, "Large Key-Value Pairs", func(t *testing.T) {
 		keySize := limits.maxKeySize / 2
 		valueSize := int(limits.maxValueSize / 2)
 
@@ -252,20 +252,20 @@ func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
 		//fmt.Printf("Putting key %v\n", trimTo40(key))
 		err := store.Put(key, value)
 		if err != nil {
-			t.Fatalf("Failed to put large key/value pair: %v", err)
+			fatalf(t, "store=%s action=PutError keySize=%d valueSize=%d key=%s err=%v", storeName, keySize, valueSize, trimTo40(key), err)
 		}
 
 		retrieved, err := store.Get(key)
 		if err != nil {
-			t.Fatalf("Failed to get large value(%v): %v", trimTo40(key), err)
+			fatalf(t, "store=%s action=GetError keySize=%d valueSize=%d key=%s err=%v", storeName, keySize, valueSize, trimTo40(key), err)
 		}
 
 		if !bytes.Equal(retrieved, value) {
-			t.Error("Retrieved large value does not match original")
+			fatalf(t, "store=%s action=GetMismatch keySize=%d valueSize=%d key=%s expected=%s got=%s", storeName, keySize, valueSize, trimTo40(key), trimTo40(value), trimTo40(retrieved))
 		}
 	})
 
-	t.Run("Mixed_Size_Operations", func(t *testing.T) {
+	runFailfast(t, "Mixed_Size_Operations", func(t *testing.T) {
 		sizes := []struct {
 			keySize   int
 			valueSize int
@@ -289,19 +289,19 @@ func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
 
 			err := store.Put(key, value)
 			if err != nil {
-				t.Fatalf("Failed to put key/value pair of size %d/%d: %v",
-					size.keySize, size.valueSize, err)
+				fatalf(t, "store=%s action=PutError keySize=%d valueSize=%d key=%s err=%v",
+					storeName, size.keySize, size.valueSize, trimTo40(key), err)
 			}
 
 			retrieved, err := store.Get(key)
 			if err != nil {
-				t.Fatalf("Failed to get value of size %d: %v",
-					size.valueSize, err)
+				fatalf(t, "store=%s action=GetError keySize=%d valueSize=%d key=%s err=%v",
+					storeName, size.keySize, size.valueSize, trimTo40(key), err)
 			}
 
 			if !bytes.Equal(retrieved, value) {
-				t.Errorf("Value mismatch for size %d/%d (%v). Expected %s, got %s",
-					size.keySize, size.valueSize, trimTo40(key), trimTo40(value), trimTo40(retrieved))
+				fatalf(t, "store=%s action=GetMismatch keySize=%d valueSize=%d key=%s expected=%s got=%s",
+					storeName, size.keySize, size.valueSize, trimTo40(key), trimTo40(value), trimTo40(retrieved))
 			}
 		}
 	})
