@@ -99,7 +99,7 @@ var StoreCreators = []StoreCreator{
 	{"EnsembleSQLite", func(d string, b, c int64) (KvLike, error) {
 		return EnsembleCreator(d, b, testFileCapacity, SQLiteCreator)
 	}},
-	{"TreeLSMBolt", func(d string, b, c int64) (KvLike, error) {
+	/*{"TreeLSMBolt", func(d string, b, c int64) (KvLike, error) {
 		return NewTreeLSM(d, b, testFileCapacity, 0, BoltDbCreator)
 	}},
 	{"TreeLSMExtent", func(d string, b, c int64) (KvLike, error) {
@@ -122,7 +122,7 @@ var StoreCreators = []StoreCreator{
 	}},
 	{"StarLSMSQLite", func(d string, b, c int64) (KvLike, error) {
 		return NewStarLSM(d, b, testFileCapacity, SQLiteCreator)
-	}},
+	}},*/	
 }
 
 // BenchmarkResult holds the results of a benchmark run

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func fatalf(tb testing.TB, format string, args ...interface{}) {
@@ -13,6 +14,7 @@ func fatalf(tb testing.TB, format string, args ...interface{}) {
 }
 
 func runFailfast(t *testing.T, name string, f func(t *testing.T)) {
+	fmt.Printf("%v: Running test %v\n", time.Now(), name)
 	t.Helper()
 	if ok := t.Run(name, f); !ok {
 		t.FailNow()

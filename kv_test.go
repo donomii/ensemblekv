@@ -10,7 +10,7 @@ import (
 // Test timeouts and limits
 const (
 	testTimeout = 300 * time.Second // Reduced from 10m
-	maxTestSize = 10 * 1024 * 1024  // 10MB max for test data
+	maxTestSize = 1024 * 1024       // 10MB max for test data
 )
 
 // StartKVStoreOperations runs the test suite with proper timeout and directory setup

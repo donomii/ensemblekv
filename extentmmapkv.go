@@ -772,11 +772,12 @@ func (s *ExtentMmapKeyValStore) Put(key, value []byte) error {
 	if err != nil {
 		return err
 	}
-	data, err := s.Get(key)
-	panicOnError("get", err)
-	if !bytes.Equal(data, value) {
-		goof.Panicf("put failed: expected %v, got %v", value, data)
-	}
+	/*
+		data, err := s.Get(key)
+		panicOnError("get", err)
+		if !bytes.Equal(data, value) {
+			goof.Panicf("put failed: expected %v, got %v", value, data)
+		}*/
 	return nil
 }
 

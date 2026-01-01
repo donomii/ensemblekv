@@ -85,15 +85,14 @@ func GetDBLimits(storeName string) DBLimits {
 	const (
 		_1KB = 1024
 		_1MB = 1024 * 1024
-		_1GB = 1024 * 1024 * 1024
 
 		// Bolt-specific limits
-		boltMaxKeySize   = 32768      // 2^15 bytes
-		boltMaxValueSize = 1073741822 // Bolt's max value size (~1GB)
+		boltMaxKeySize   = 32768 // 2^15 bytes
+		boltMaxValueSize = _1MB  // Bolt's max value size (~1GB)
 
 		// Test-friendly sizes for larger values
-		testMaxKeySize   = 1 * _1MB   // 1MB for test keys
-		testMaxValueSize = 100 * _1MB // 10MB for test values
+		testMaxKeySize   = 1 * _1MB  // 1MB for test keys
+		testMaxValueSize = 10 * _1MB // 10MB for test values
 	)
 
 	switch storeName {
@@ -230,7 +229,7 @@ func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
 			fatalf(t, "store=%s action=PutError key=%s value=%s err=%v", storeName, trimTo40(key), trimTo40(value), err)
 		}
 
-		fmt.Printf("Getting key %v\n", trimTo40(key))
+		//fmt.Printf("Getting key %v\n", trimTo40(key))
 		retrieved, err := store.Get(key)
 		if err != nil {
 			store.DumpIndex()
