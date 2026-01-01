@@ -537,21 +537,14 @@ func (s *ExtentMmapKeyValStore) loadValuesIndexCache() error {
 	return nil
 }
 
-func (s *ExtentMmapKeyValStore) loadKeyCache() error {
+func (s *ExtentMmapKeyValStore) loadAllKeys() (*syncmap.SyncMap[string, bool], error) {
 	s.globalLock.Lock()
 	defer s.globalLock.Unlock()
 
-	if !EnableIndexCaching {
-		return fmt.Errorf("loadKeyCache should not be called when caching is disabled")
-	}
-
-	if s.cache == nil {
-		s.cache = (*syncmap.SyncMap[string, bool])(syncmap.NewSyncMap[string, bool]())
-	}
+	out := &syncmap.SyncMap[string, bool]{}
 
 	keyIndexFileLength, err := s.keysIndex.Seek(0, 2)
 	panicOnError("Get key index file length", err)
-
 	_, err = s.keysIndex.Seek(0, 0)
 	panicOnError("Seek to start of keys index file", err)
 	_, err = s.valuesIndex.Seek(0, 0)
@@ -584,13 +577,26 @@ func (s *ExtentMmapKeyValStore) loadKeyCache() error {
 		_ = keyPos
 		_ = valuePos
 
-		s.cache.Store(string(keyData), !deleted)
+		out.Store(string(keyData), !deleted)
 
 		entry++
 	}
 
 	s.cacheLoads++
-	return nil
+	return out, nil
+}
+
+func (s *ExtentMmapKeyValStore) loadKeyCache() error {
+	if !EnableIndexCaching {
+		return fmt.Errorf("loadKeyCache should not be called when caching is disabled")
+	}
+
+	if s.cache == nil {
+		s.cache = (*syncmap.SyncMap[string, bool])(syncmap.NewSyncMap[string, bool]())
+	}
+	var err error
+	s.cache, err = s.loadAllKeys()
+	return err
 }
 
 func (s *ExtentMmapKeyValStore) forwardScanForKey(key []byte) ([]byte, error) {
@@ -706,59 +712,70 @@ func (s *ExtentMmapKeyValStore) ClearCache() {
 }
 
 func (s *ExtentMmapKeyValStore) Put(key, value []byte) error {
-	s.globalLock.Lock()
-	defer s.globalLock.Unlock()
+	err := func() error {
+		s.globalLock.Lock()
+		defer s.globalLock.Unlock()
 
-	valuePos, err := s.valuesFile.Seek(0, io.SeekEnd)
-	panicOnError("Seek to end of values file", err)
-	valueSize, err := s.valuesFile.Write(value)
-	panicOnError("Write value to values file", err)
+		valuePos, err := s.valuesFile.Seek(0, io.SeekEnd)
+		panicOnError("Seek to end of values file", err)
+		valueSize, err := s.valuesFile.Write(value)
+		panicOnError("Write value to values file", err)
 
-	if valueSize != len(value) {
-		panic("Wrote wrong number of bytes")
+		if valueSize != len(value) {
+			panic("Wrote wrong number of bytes")
+		}
+
+		endOfValuesFile, err := s.valuesFile.Seek(0, io.SeekEnd)
+		panicOnError("Seek to end of values file", err)
+
+		if valuePos+int64(valueSize) != endOfValuesFile {
+			panic(fmt.Errorf("valuePos+valueSize (%d) != endOfValuesFile (%d)", valuePos+int64(valueSize), endOfValuesFile))
+		}
+
+		_, err = s.valuesIndex.Seek(0, io.SeekEnd)
+		panicOnError("Seek to end of values index file", err)
+
+		err = binary.Write(s.valuesIndex, binary.BigEndian, endOfValuesFile)
+		panicOnError("Write end of values file to values index file", err)
+
+		keyDataPos, err := s.keysFile.Seek(0, io.SeekEnd)
+		panicOnError("Seek to end of keys file", err)
+
+		keySize, err := s.keysFile.Write(key)
+		panicOnError("Write key to keys file", err)
+
+		if keySize != len(key) {
+			panic("Key size mismatch")
+		}
+
+		endOfKeysFile, err := s.keysFile.Seek(0, io.SeekEnd)
+		panicOnError("Seek to end of keys file", err)
+
+		if keyDataPos+int64(keySize) != endOfKeysFile {
+			panic(fmt.Errorf("keyDataPos+keySize (%d) != endOfKeysFile (%d)", keyDataPos+int64(keySize), endOfKeysFile))
+		}
+
+		_, err = s.keysIndex.Seek(0, io.SeekEnd)
+		panicOnError("Seek to end of keys index file", err)
+
+		err = binary.Write(s.keysIndex, binary.BigEndian, endOfKeysFile)
+		panicOnError("Write to keys index file", err)
+
+		checkLastIndexEntryMmap(s.keysIndex, s.keysFile)
+		checkLastIndexEntryMmap(s.valuesIndex, s.valuesFile)
+		checkIndexSignsMmap(s.keysIndex, s.valuesIndex)
+		if EnableIndexCaching {
+			s.cache.Store(string(key), true)
+		}
+		return nil
+	}()
+	if err != nil {
+		return err
 	}
-
-	endOfValuesFile, err := s.valuesFile.Seek(0, io.SeekEnd)
-	panicOnError("Seek to end of values file", err)
-
-	if valuePos+int64(valueSize) != endOfValuesFile {
-		panic(fmt.Errorf("valuePos+valueSize (%d) != endOfValuesFile (%d)", valuePos+int64(valueSize), endOfValuesFile))
-	}
-
-	_, err = s.valuesIndex.Seek(0, io.SeekEnd)
-	panicOnError("Seek to end of values index file", err)
-
-	err = binary.Write(s.valuesIndex, binary.BigEndian, endOfValuesFile)
-	panicOnError("Write end of values file to values index file", err)
-
-	keyDataPos, err := s.keysFile.Seek(0, io.SeekEnd)
-	panicOnError("Seek to end of keys file", err)
-
-	keySize, err := s.keysFile.Write(key)
-	panicOnError("Write key to keys file", err)
-
-	if keySize != len(key) {
-		panic("Key size mismatch")
-	}
-
-	endOfKeysFile, err := s.keysFile.Seek(0, io.SeekEnd)
-	panicOnError("Seek to end of keys file", err)
-
-	if keyDataPos+int64(keySize) != endOfKeysFile {
-		panic(fmt.Errorf("keyDataPos+keySize (%d) != endOfKeysFile (%d)", keyDataPos+int64(keySize), endOfKeysFile))
-	}
-
-	_, err = s.keysIndex.Seek(0, io.SeekEnd)
-	panicOnError("Seek to end of keys index file", err)
-
-	err = binary.Write(s.keysIndex, binary.BigEndian, endOfKeysFile)
-	panicOnError("Write to keys index file", err)
-
-	checkLastIndexEntryMmap(s.keysIndex, s.keysFile)
-	checkLastIndexEntryMmap(s.valuesIndex, s.valuesFile)
-	checkIndexSignsMmap(s.keysIndex, s.valuesIndex)
-	if EnableIndexCaching {
-		s.cache.Store(string(key), true)
+	data, err := s.Get(key)
+	panicOnError("get", err)
+	if !bytes.Equal(data, value) {
+		goof.Panicf("put failed: expected %v, got %v", value, data)
 	}
 	return nil
 }
@@ -886,14 +903,35 @@ func (s *ExtentMmapKeyValStore) Close() error {
 }
 
 func (s *ExtentMmapKeyValStore) List() ([]string, error) {
-	s.loadKeyCache()
-	keys := s.cache.Keys()
-	return keys, nil
+
+	if EnableIndexCaching {
+		s.loadKeyCache()
+		keys := s.cache.Keys()
+		return keys, nil
+	} else {
+		keysMap := make(map[string]bool)
+		s.MapFunc(func(k, v []byte) error {
+			keysMap[string(k)] = true
+			return nil
+		})
+		keys := make([]string, 0, len(keysMap))
+		for k := range keysMap {
+			keys = append(keys, k)
+		}
+		return keys, nil
+	}
 }
 
 func (s *ExtentMmapKeyValStore) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
-	s.loadKeyCache()
-	keys := s.cache.Keys()
+	var keys []string
+	if EnableIndexCaching {
+		s.loadKeyCache()
+		keys = s.cache.Keys()
+	} else {
+		keyMap, err := s.loadAllKeys()
+		panicOnError("loadAllKeys", err)
+		keys = keyMap.Keys()
+	}
 
 	out := make(map[string]bool)
 	for _, key := range keys {
