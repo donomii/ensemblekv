@@ -8,7 +8,7 @@ require (
 	github.com/donomii/goof v0.0.0-20230125141827-464a0fadad76
 	github.com/iand/gonudb v0.4.4
 	github.com/recoilme/pudge v1.0.3
-	github.com/sasha-s/go-deadlock v0.3.6
+
 	go.etcd.io/bbolt v1.3.11
 	golang.org/x/sys v0.30.0
 	modernc.org/sqlite v1.32.0

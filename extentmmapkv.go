@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/donomii/clusterF/syncmap"
 	"github.com/donomii/goof"
-	"github.com/sasha-s/go-deadlock"
 	"golang.org/x/sys/unix"
 )
 
@@ -282,7 +282,7 @@ type ExtentMmapKeyValStore struct {
 	keysIndex   *mmapFile
 	valuesIndex *mmapFile
 	blockSize   int64
-	globalLock  deadlock.Mutex
+	globalLock  sync.Mutex
 	cache       *syncmap.SyncMap[string, bool]
 
 	keysIndexCache   []byte
