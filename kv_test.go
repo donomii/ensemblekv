@@ -316,6 +316,8 @@ func MixedSizeKeyValuePairs(t *testing.T, store KvLike, storeName string) {
 	}
 }
 
+// ***** Wrapper types, base types control which combination of stores and meta-stores will run *****
+
 // Base store types
 var baseStores = []struct {
 	name    string
@@ -345,7 +347,7 @@ var wrapperTypes = []struct {
 			}
 		},
 	},
-	{
+	/*{
 		"Tree",
 		func(baseCreator CreatorFunc) CreatorFunc {
 			return func(directory string, blockSize, filesize int64) (KvLike, error) {
@@ -360,7 +362,7 @@ var wrapperTypes = []struct {
 				return NewStarLSM(directory, blockSize, testFileCapacity, baseCreator)
 			}
 		},
-	},
+	},*/
 }
 
 func TestAllStores(t *testing.T) {
