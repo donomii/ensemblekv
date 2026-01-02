@@ -12,28 +12,27 @@ import (
 // TreeLSM represents a hierarchical LSM-tree store
 type TreeLSM struct {
 	DefaultOps
-	directory   string  // Directory for the current store
-	currentStore KvLike  // Current store, using the real kv store
-	subStores   map[string]*TreeLSM // Substores for each prefix
-	prefix      string	// Prefix for the current store
-	isReadOnly  bool
-	createStore CreatorFunc
-	blockSize   int64	// Size of each block
-	fileSize    int64  // MAximum file size for the current store
-	level 	 int64 // Current level in the tree
-	mutex       sync.RWMutex
-	hashFunc    HashFunc // Added hash function
+	directory    string              // Directory for the current store
+	currentStore KvLike              // Current store, using the real kv store
+	subStores    map[string]*TreeLSM // Substores for each prefix
+	prefix       string              // Prefix for the current store
+	isReadOnly   bool
+	createStore  CreatorFunc
+	blockSize    int64 // Size of each block
+	fileSize     int64 // MAximum file size for the current store
+	level        int64 // Current level in the tree
+	mutex        sync.RWMutex
+	hashFunc     HashFunc // Added hash function
 }
 
 // hashKey hashes a key and returns the hex string
 func (t *TreeLSM) hashKey(key []byte) string {
 	// Use hash function to get uint64
 	hashVal := t.hashFunc(key)
-	
+
 	// Convert to hex string
 	return fmt.Sprintf("%016x", hashVal)
 }
-
 
 // NewTreeLSM creates a new TreeLSM store
 func NewTreeLSM(
@@ -50,7 +49,7 @@ func NewTreeLSM(
 		createStore: createStore,
 		blockSize:   blockSize,
 		fileSize:    fileSize,
-		level:	  level,
+		level:       level,
 		hashFunc:    defaultHashFunc, // Use the same hash function as EnsembleKV
 	}
 
@@ -75,36 +74,33 @@ func NewTreeLSM(
 		store.isReadOnly = true
 	}
 
-
-
 	return store, nil
 }
 
 // getPrefixForKey now uses the hashed key value
-func (t *TreeLSM)  getPrefixForKey(hashedKey string) string {
+func (t *TreeLSM) getPrefixForKey(hashedKey string) string {
 	if len(hashedKey) == 0 {
 		return "0"
 	}
 	return hashedKey[:t.level+1]
 }
 
-
 func (t *TreeLSM) KeyHistory(key []byte) ([][]byte, error) {
 	t.mutex.RLock()
 	defer t.mutex.RUnlock()
-	
+
 	allHistory := make([][]byte, 0)
-	
+
 	// Try to get current store history
 	history, err := t.currentStore.KeyHistory(key)
 	if err == nil && len(history) > 0 {
 		allHistory = append(allHistory, history...)
 	}
-	
+
 	// Also check substores
 	hashedKey := t.hashKey(key)
 	prefix := t.getPrefixForKey(hashedKey)
-	
+
 	// Check the substore that should contain this key
 	if subStore, exists := t.subStores[prefix]; exists {
 		history, err := subStore.KeyHistory(key)
@@ -112,20 +108,32 @@ func (t *TreeLSM) KeyHistory(key []byte) ([][]byte, error) {
 			allHistory = append(allHistory, history...)
 		}
 	}
-	
+
 	// Also check other substores - key might have moved
 	for subPrefix, subStore := range t.subStores {
 		if subPrefix == prefix {
 			continue // Already checked
 		}
-		
+
 		history, err := subStore.KeyHistory(key)
 		if err == nil && len(history) > 0 {
 			allHistory = append(allHistory, history...)
 		}
 	}
-	
+
 	return allHistory, nil
+}
+
+func (t *TreeLSM) Keys() [][]byte {
+	t.mutex.RLock()
+	defer t.mutex.RUnlock()
+
+	var keys [][]byte
+	for _, subStore := range t.subStores {
+		subKeys := subStore.Keys()
+		keys = append(keys, subKeys...)
+	}
+	return keys
 }
 
 // Put stores a key-value pair
@@ -134,6 +142,7 @@ func (t *TreeLSM) Put(key, value []byte) error {
 	defer t.mutex.Unlock()
 	return t.LockFreePut(key, value)
 }
+
 // LockFreePut stores a key-value pair without locking
 func (t *TreeLSM) LockFreePut(key, value []byte) error {
 	debugf("TreeLSM: Put: %s", t.hashKey(key))
@@ -145,7 +154,6 @@ func (t *TreeLSM) LockFreePut(key, value []byte) error {
 	if len(key) > maxValueSize {
 		return fmt.Errorf("key size exceeds storage limit")
 	}
-
 
 	// Hash the key first
 	hashedKey := t.hashKey(key)
@@ -163,7 +171,7 @@ func (t *TreeLSM) LockFreePut(key, value []byte) error {
 	}
 
 	// Check if we need to split
-	if t.currentStore.Size() + int64(len(value)) > int64(0.9*float64(t.fileSize)) {
+	if t.currentStore.Size()+int64(len(value)) > int64(0.9*float64(t.fileSize)) {
 		debugf("Splitting store %s because value size %v is greater than 90%% of file size %v\n", t.directory, len(value), maxValueSize)
 		debugf("Splitting store %s because value size %v is greater than 90%% of file size %v\n", t.directory, len(value), maxValueSize)
 		if err := t.split(); err != nil {
@@ -215,12 +223,12 @@ func (t *TreeLSM) split() error {
 		p := fmt.Sprintf("%s%x", t.prefix, i)
 		dir := fmt.Sprintf("substore_%x", p)
 		subDir := filepath.Join(t.directory, dir)
-		
-		subStore, err := NewTreeLSM(subDir, t.blockSize, t.fileSize, t.level+1,t.createStore)
+
+		subStore, err := NewTreeLSM(subDir, t.blockSize, t.fileSize, t.level+1, t.createStore)
 		if err != nil {
 			return fmt.Errorf("failed to create substore %s: %w", dir, err)
 		}
-		
+
 		subStore.prefix = p
 		t.subStores[p] = subStore
 	}
@@ -285,13 +293,8 @@ func (t *TreeLSM) Exists(key []byte) bool {
 	return false
 }
 
-// The rest of the methods (Flush, Close, Size, MapFunc) remain unchanged 
+// The rest of the methods (Flush, Close, Size, MapFunc) remain unchanged
 // as they don't need to deal with key hashing directly
-
-
-
-
-
 
 // loadSubStores scans for and loads existing substores
 func (t *TreeLSM) loadSubStores() error {
@@ -301,7 +304,7 @@ func (t *TreeLSM) loadSubStores() error {
 	}
 
 	for _, entry := range entries {
-		if entry.IsDir() &&  strings.HasPrefix(entry.Name(), "substore_") {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "substore_") {
 			prefix := strings.TrimPrefix(entry.Name(), "substore_")
 			subStore, err := NewTreeLSM(
 				filepath.Join(t.directory, entry.Name()),
@@ -321,16 +324,11 @@ func (t *TreeLSM) loadSubStores() error {
 	return nil
 }
 
-
 // isHexString checks if a string is valid hex
 func isHexString(s string) bool {
 	_, err := hex.DecodeString(s)
 	return err == nil
 }
-
-
-
-
 
 // Flush ensures all data is written to disk
 func (t *TreeLSM) Flush() error {

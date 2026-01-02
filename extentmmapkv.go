@@ -690,6 +690,51 @@ func (s *ExtentMmapKeyValStore) KeyHistory(key []byte) ([][]byte, error) {
 	return history, nil
 }
 
+func (s *ExtentMmapKeyValStore) Keys() [][]byte {
+	s.globalLock.Lock()
+	defer s.globalLock.Unlock()
+
+	history := make([][]byte, 0)
+
+	s.keysFile.Seek(0, 0)
+	s.keysIndex.Seek(0, 0)
+	s.valuesFile.Seek(0, 0)
+	s.valuesIndex.Seek(0, 0)
+
+	keyIndexFileLength, _ := s.keysIndex.Seek(0, 2)
+	s.keysIndex.Seek(0, 0)
+
+	if EnableIndexCaching {
+		s.loadKeysIndexCache()
+		s.loadValuesIndexCache()
+	}
+
+	entry := int64(0)
+	for {
+		if entry*8+16 > keyIndexFileLength {
+			break
+		}
+
+		keyData, deleted, err := s.readDataAtIndexPos(int64(entry*8), s.keysIndex, s.keysFile, s.keysIndexCache)
+		if err != nil {
+			entry++
+			continue
+		}
+
+		if !deleted {
+
+			copyValue := make([]byte, len(keyData))
+			copy(copyValue, keyData)
+			history = append(history, copyValue)
+
+		}
+
+		entry++
+	}
+
+	return history
+}
+
 func (s *ExtentMmapKeyValStore) readIndexAt(indexFile *mmapFile, cache []byte, offset int64, data interface{}) error {
 	if EnableIndexCaching && cache != nil {
 		if offset < 0 || offset+8 > int64(len(cache)) {

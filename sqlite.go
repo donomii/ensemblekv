@@ -260,3 +260,24 @@ func (s *SQLiteKV) withTx(fn func(*sql.Tx) error) error {
 	}
 	return nil
 }
+
+func (s *SQLiteKV) Keys() [][]byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var keys [][]byte
+	rows, err := s.db.Query(`SELECT key FROM kv_store`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil
+		}
+		keys = append(keys, []byte(key))
+	}
+	return keys
+}

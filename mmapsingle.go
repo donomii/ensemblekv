@@ -259,6 +259,12 @@ func (kv *MmapSingleKV) Get(key []byte) ([]byte, error) {
 	return value, nil
 }
 
+func (kv *MmapSingleKV) Keys() [][]byte {
+	var keys [][]byte
+	panic("not implemented")
+	return keys
+}
+
 func (kv *MmapSingleKV) Put(key []byte, val []byte) error {
 	if len(val) > 1073741822 {
 		return fmt.Errorf("value size too large: %v", len(val))

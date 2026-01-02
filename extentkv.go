@@ -14,7 +14,7 @@ import (
 )
 
 var EnableIndexCaching bool = true // Feature flag for index caching
-var ExtraChecks bool = true
+var ExtraChecks bool = false
 
 /*
 =======================================================================
@@ -419,6 +419,16 @@ func NewExtentKeyValueStore(directory string, blockSize, filesize int64) (*Exten
 	s.ClearCache()
 
 	return s, nil
+}
+
+func (s *ExtentKeyValStore) Keys() [][]byte {
+	s.loadKeyCache()
+	keysstr := s.existsCache.Keys()
+	keys := make([][]byte, len(keysstr))
+	for i, k := range keysstr {
+		keys[i] = []byte(k)
+	}
+	return keys
 }
 
 func (s *ExtentKeyValStore) loadKeysIndexCache() error {

@@ -1,38 +1,38 @@
 /*
 lsmkv - A Multi-Tier Log-Structured Merge (LSM) Key-Value Store
 
-This package implements an LSM key–value store with multiple tiers designed for efficient write buffering 
-and on-demand compaction. Data is initially written to Tier 0 (the active store) and is flushed upward to higher tiers 
+This package implements an LSM key–value store with multiple tiers designed for efficient write buffering
+and on-demand compaction. Data is initially written to Tier 0 (the active store) and is flushed upward to higher tiers
 when the configured size limits are exceeded.
 
 Key Features:
-  - **Prefixed Keys:**  
-    Every key is automatically stored with a prefix to avoid conflicts. Data entries are prefixed with "d:" 
-    and tombstones (deletion markers) with "t:". This ensures that a user’s key never accidentally conflicts 
+  - **Prefixed Keys:**
+    Every key is automatically stored with a prefix to avoid conflicts. Data entries are prefixed with "d:"
+    and tombstones (deletion markers) with "t:". This ensures that a user’s key never accidentally conflicts
     with a tombstone marker.
 
-  - **On-Demand Compaction:**  
-    Instead of running a continuous background process, this implementation checks after every write. If the active tier 
+  - **On-Demand Compaction:**
+    Instead of running a continuous background process, this implementation checks after every write. If the active tier
     exceeds its maximum size, the store immediately triggers a flush (merge) into the next tier.
 
-  - **Multi-Tier Architecture:**  
-    Data is organized into multiple tiers (by default, 4 tiers). New writes are inserted into Tier 0, and when 
+  - **Multi-Tier Architecture:**
+    Data is organized into multiple tiers (by default, 4 tiers). New writes are inserted into Tier 0, and when
     a tier's size limit is reached, its contents are merged upward to higher tiers.
 
-  - **Tombstone-Based Deletion:**  
-    Deletions are handled by inserting tombstones rather than removing keys immediately. This mechanism ensures 
+  - **Tombstone-Based Deletion:**
+    Deletions are handled by inserting tombstones rather than removing keys immediately. This mechanism ensures
     that deleted keys are not returned during lookups, even if remnants exist in older tiers.
 
 Usage:
-  1. **Initialization:**  
-     Call `NewLinelsm(directory, blockSize, maxKeys, createStore)` to create a new LSM store instance.  
-     The `createStore` function should return an implementation of the `KvLike` interface, which provides basic 
+  1. **Initialization:**
+     Call `NewLinelsm(directory, blockSize, maxKeys, createStore)` to create a new LSM store instance.
+     The `createStore` function should return an implementation of the `KvLike` interface, which provides basic
      operations such as Put, Get, Delete, Exists, Size, MapFunc, and Close.
 
-  2. **Operations:**  
-     - `Put(key, value []byte) error`: Inserts or updates key–value pairs in Tier 0, automatically applying the 
+  2. **Operations:**
+     - `Put(key, value []byte) error`: Inserts or updates key–value pairs in Tier 0, automatically applying the
        appropriate prefix to the key.
-     - `Get(key []byte) ([]byte, error)`: Retrieves the value associated with a key, ensuring that any tombstone 
+     - `Get(key []byte) ([]byte, error)`: Retrieves the value associated with a key, ensuring that any tombstone
        marker is respected.
      - `Delete(key []byte) error`: Marks a key as deleted by inserting a tombstone.
      - `Flush() error`: Manually triggers a flush (merge) of all tiers.
@@ -103,10 +103,10 @@ func NewLinelsm(
 	createStore CreatorFunc,
 ) (*Linelsm, error) {
 	store := &Linelsm{
-		directory:    directory,
-		maxKeys:      maxKeys,
-		createStore:  createStore,
-		tiers:        make([][]KvLike, 4), // Start with 4 tiers
+		directory:   directory,
+		maxKeys:     maxKeys,
+		createStore: createStore,
+		tiers:       make([][]KvLike, 4), // Start with 4 tiers
 		maxTierSizes: []int64{
 			64 * 1024 * 1024,   // Tier 0: 64MB
 			256 * 1024 * 1024,  // Tier 1: 256MB
@@ -114,7 +114,7 @@ func NewLinelsm(
 			4096 * 1024 * 1024, // Tier 3: 4GB
 		},
 		blockSize: blockSize,
-		fileSize: fileSize,
+		fileSize:  fileSize,
 	}
 
 	// Ensure the root directory exists
@@ -281,6 +281,21 @@ func (l *Linelsm) Flush() error {
 		}
 	}
 	return nil
+}
+
+func (l *Linelsm) Keys() [][]byte {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	keys := make([][]byte, 0)
+	for tier := 0; tier < len(l.tiers); tier++ {
+		for _, store := range l.tiers[tier] {
+			subKeys := store.Keys()
+			keys = append(keys, subKeys...)
+		}
+	}
+
+	return keys
 }
 
 // shouldFlushTier determines if a tier needs flushing based on its total size.
@@ -468,9 +483,9 @@ func (l *Linelsm) Size() int64 {
 func (l *Linelsm) KeyHistory(key []byte) ([][]byte, error) {
 	l.mutex.RLock()
 	defer l.mutex.RUnlock()
-	
+
 	allHistory := make([][]byte, 0)
-	
+
 	// Linelsm uses prefixed keys
 	dataKey := append([]byte(dataPrefix), key...)
 
@@ -484,7 +499,7 @@ func (l *Linelsm) KeyHistory(key []byte) ([][]byte, error) {
 			}
 		}
 	}
-	
+
 	return allHistory, nil
 }
 
@@ -493,10 +508,10 @@ func (l *Linelsm) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (ma
 	defer l.mutex.RUnlock()
 
 	keys := make(map[string]bool)
-	
+
 	// Linelsm stores keys with data prefix "d:", so we need to handle this
 	dataPrefixedKey := append([]byte(dataPrefix), prefix...)
-	
+
 	// Check all tiers
 	for _, tier := range l.tiers {
 		for _, store := range tier {

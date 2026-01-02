@@ -18,7 +18,7 @@ type JsonKV struct {
 }
 
 // NewJsonKV creates a new JSON key-value store
-func JsonKVCreator(directory string, blockSize , fileSize int64) (KvLike, error) {
+func JsonKVCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
 	store := &JsonKV{
 		filename: filepath.Join(directory, "store.json"),
 		data:     make(map[string][]byte),
@@ -60,7 +60,6 @@ func (s *JsonKV) load() error {
 // save writes the in-memory data to JSON file
 func (s *JsonKV) save() error {
 
-
 	data, err := json.MarshalIndent(s.data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal data: %w", err)
@@ -73,14 +72,25 @@ func (s *JsonKV) save() error {
 func (s *JsonKV) KeyHistory(key []byte) ([][]byte, error) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	
+
 	// JsonKV only maintains current values, no history
 	value, err := s.Get(key)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return [][]byte{value}, nil
+}
+
+func (s *JsonKV) Keys() [][]byte {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	keys := make([][]byte, 0, len(s.data))
+	for k := range s.data {
+		keys = append(keys, []byte(k))
+	}
+	return keys
 }
 
 // Get retrieves a value for a key

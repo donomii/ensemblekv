@@ -26,7 +26,8 @@ type KvLike interface {
 	MapFunc(f func([]byte, []byte) error) (map[string]bool, error)                      // MapFunc applies a function to all key-value pairs in the store.  The function should return an error if it fails.  Some stores may call f multiple times for the same key, with each call being a different past value (usually caused by overwrites in an LSM store).  Returns a map of keys that were processed, where the value indicates if the key exists (true) or was deleted (false).
 	MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) // MapPrefixFunc applies a function to all key-value pairs in the store that have a given prefix.  The function should return an error if it fails.  Some stores may call f multiple times for the same key, with each call being a different past value (usually caused by overwrites in an LSM store).  Returns a map of keys that were processed, where the value indicates if the key exists (true) or was deleted (false).
 	DumpIndex() error                                                                   // Prints the index to stdout, for debuggins
-	KeyHistory(key []byte) ([][]byte, error)                                            // Returns array of all keys
+	KeyHistory(key []byte) ([][]byte, error)                                            // Returns array of all values for a given key
+	Keys() [][]byte                                                                     // Returns array of all keys
 }
 
 type DefaultOps struct {
@@ -161,6 +162,21 @@ func (s *EnsembleKv) KeyHistory(key []byte) ([][]byte, error) {
 	return allHistory, nil
 }
 
+func (s *EnsembleKv) Keys() [][]byte {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	var keys [][]byte
+
+	// Get keys from substores
+	for _, substore := range s.substores {
+		subKeys := substore.Keys()
+		keys = append(keys, subKeys...)
+	}
+
+	return keys
+}
+
 // Get retrieves a value for a given key from the appropriate substore.
 func (s *EnsembleKv) Get(key []byte) ([]byte, error) {
 
@@ -191,8 +207,6 @@ func (s *EnsembleKv) Put(key []byte, val []byte) error {
 
 	// Increment total key count
 	s.totalKeys = s.totalKeys + 1
-
-
 
 	return nil
 }
@@ -245,7 +259,6 @@ func (s *EnsembleKv) Close() error {
 	}
 	return nil
 }
-
 
 // Metadata represents the persistent state of the Store.
 type Metadata struct {
@@ -334,7 +347,7 @@ func (s *EnsembleKv) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) 
 	defer s.mutex.Unlock()
 
 	keys := make(map[string]bool)
-	
+
 	// Iterate over each substore and call MapPrefixFunc
 	for _, substore := range s.substores {
 		subKeys, err := substore.MapPrefixFunc(prefix, f)

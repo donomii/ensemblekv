@@ -216,6 +216,13 @@ func (s *nuDbShim) Get(key []byte) ([]byte, error) {
 	return s.dbHandle.Fetch(string(key))
 }
 
+func (s *nuDbShim) Keys() [][]byte {
+
+	var keys [][]byte
+	panic("not implemented")
+	return keys
+}
+
 func (s *nuDbShim) Put(key []byte, val []byte) error {
 	err := s.dbHandle.Insert(string(key), val)
 	if err != nil {
@@ -317,6 +324,12 @@ func (s *BoltDbShim) KeyHistory(key []byte) ([][]byte, error) {
 	}
 
 	return [][]byte{value}, nil
+}
+
+func (s *BoltDbShim) Keys() [][]byte {
+	var keys [][]byte
+	panic("not implemented")
+	return keys
 }
 
 func (s *BoltDbShim) Get(key []byte) ([]byte, error) {
@@ -484,6 +497,12 @@ func (s *PudgeShim) KeyHistory(key []byte) ([][]byte, error) {
 	return [][]byte{value}, nil
 }
 
+func (s *PudgeShim) Keys() [][]byte {
+	var keys [][]byte
+	panic("not implemented")
+	return keys
+}
+
 // Get implements KvLike interface
 func (s *PudgeShim) Get(key []byte) ([]byte, error) {
 	var value []byte
@@ -648,6 +667,12 @@ func (s *S3Shim) Get(key []byte) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+func (s *S3Shim) Keys() [][]byte {
+	var keys [][]byte
+	panic("not implemented")
+	return keys
 }
 
 func (s *S3Shim) Put(key []byte, val []byte) error {

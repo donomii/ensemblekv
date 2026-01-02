@@ -19,7 +19,7 @@ type StarLSM struct {
 	subStores    map[string]*StarLSM
 	parent       *StarLSM
 	prefix       string
-	depth        int64         // Current depth in the tree
+	depth        int64 // Current depth in the tree
 	isReadOnly   bool
 	createStore  CreatorFunc
 	blockSize    int64
@@ -36,13 +36,13 @@ func NewStarLSM(
 	createStore CreatorFunc,
 ) (*StarLSM, error) {
 	store := &StarLSM{
-		directory:    directory,
-		subStores:    make(map[string]*StarLSM),
-		createStore:  createStore,
-		blockSize:    blockSize,
-		fileSize:     fileSize,
-		hashFunc:     defaultHashFunc,
-		depth:        0,
+		directory:   directory,
+		subStores:   make(map[string]*StarLSM),
+		createStore: createStore,
+		blockSize:   blockSize,
+		fileSize:    fileSize,
+		hashFunc:    defaultHashFunc,
+		depth:       0,
 	}
 
 	if err := os.MkdirAll(directory, 0755); err != nil {
@@ -81,15 +81,15 @@ func (s *StarLSM) getPrefixAtDepth(hashedKey string, depth int64) string {
 func (s *StarLSM) KeyHistory(key []byte) ([][]byte, error) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	
+
 	allHistory := make([][]byte, 0)
-	
+
 	// Try current store history
 	history, err := s.currentStore.KeyHistory(key)
 	if err == nil && len(history) > 0 {
 		allHistory = append(allHistory, history...)
 	}
-	
+
 	// Hash the key
 	hashedKey := s.hashKey(key)
 	prefix := s.getPrefixAtDepth(hashedKey, s.depth)
@@ -101,20 +101,32 @@ func (s *StarLSM) KeyHistory(key []byte) ([][]byte, error) {
 			allHistory = append(allHistory, history...)
 		}
 	}
-	
+
 	// Also check other substores
 	for subPrefix, subStore := range s.subStores {
 		if subPrefix == prefix {
 			continue // Already checked
 		}
-		
+
 		history, err := subStore.KeyHistory(key)
 		if err == nil && len(history) > 0 {
 			allHistory = append(allHistory, history...)
 		}
 	}
-	
+
 	return allHistory, nil
+}
+
+func (s *StarLSM) Keys() [][]byte {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var keys [][]byte
+	for _, subStore := range s.subStores {
+		subKeys := subStore.Keys()
+		keys = append(keys, subKeys...)
+	}
+	return keys
 }
 
 // Put stores a key-value pair
@@ -148,17 +160,17 @@ func (s *StarLSM) Put(key, value []byte) error {
 // split creates substores for the next level of hash precision
 func (s *StarLSM) split(hashedKey string) error {
 	nextDepth := s.depth + 1
-	
+
 	// Create subdirectories for each hex character at this depth
 	for i := 0; i < 16; i++ {
 		prefix := fmt.Sprintf("%s%x", s.prefix, i)
 		subDir := filepath.Join(s.directory, fmt.Sprintf("%x", i))
-		
+
 		subStore, err := NewStarLSM(subDir, s.blockSize, s.fileSize, s.createStore)
 		if err != nil {
 			return fmt.Errorf("failed to create substore %s: %w", prefix, err)
 		}
-		
+
 		subStore.prefix = prefix
 		subStore.parent = s
 		subStore.depth = nextDepth
@@ -272,12 +284,11 @@ func (s *StarLSM) loadSubStores() error {
 				s.blockSize,
 				s.fileSize,
 				s.createStore,
-
 			)
 			if err != nil {
 				return fmt.Errorf("failed to load substore %s: %w", entry.Name(), err)
 			}
-			
+
 			prefix := s.prefix + entry.Name()
 			subStore.prefix = prefix
 			subStore.parent = s

@@ -977,3 +977,42 @@ func (lsm *SingleFileLSM) KeyHistory(key []byte) ([][]byte, error) {
 
 	return history, nil
 }
+
+func (s *SingleFileLSM) Keys() [][]byte {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	if s.closed {
+		return nil
+	}
+
+	keysState := make(map[string]bool)
+
+	// Iterate SSTables from oldest to newest so newer entries win.
+	for i := 0; i < len(s.sstables); i++ {
+		meta := &s.sstables[i]
+		if err := s.iterateSSTable(meta, func(k, v []byte) error {
+			keysState[string(k)] = true
+			return nil
+		}, keysState); err != nil {
+			continue
+		}
+	}
+
+	// Memtable is newest; it overrides SSTables.
+	for k, v := range s.memTable {
+		if v == nil {
+			keysState[k] = false
+		} else {
+			keysState[k] = true
+		}
+	}
+
+	keys := make([][]byte, 0, len(keysState))
+	for k, exists := range keysState {
+		if exists {
+			keys = append(keys, []byte(k))
+		}
+	}
+	return keys
+}
