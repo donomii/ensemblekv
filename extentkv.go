@@ -863,6 +863,13 @@ func (s *ExtentKeyValStore) Get(key []byte) ([]byte, error) {
 	checkIndexSigns(s.keysIndex, s.valuesIndex)
 
 	if EnableIndexCaching {
+		if err := s.loadKeysIndexCache(); err != nil {
+			return nil, fmt.Errorf("failed to load keys index cache: %w", err)
+		}
+		if err := s.loadValuesIndexCache(); err != nil {
+			return nil, fmt.Errorf("failed to load values index cache: %w", err)
+		}
+
 		state, exists := s.existsCache.Load(string(key))
 		if exists {
 			s.cacheHits++ // key was found in the cache map (even though we still go to disk for value)
