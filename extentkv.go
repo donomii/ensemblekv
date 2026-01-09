@@ -500,6 +500,10 @@ func (s *ExtentKeyValStore) loadKeyCache() error {
 		s.existsCache = (*syncmap.SyncMap[string, bool])(syncmap.NewSyncMap[string, bool]())
 	}
 
+	if s.valueOffsetCache == nil {
+		s.valueOffsetCache = (*syncmap.SyncMap[string, [2]int64])(syncmap.NewSyncMap[string, [2]int64]())
+	}
+
 	keyIndexFileLength, err := s.keysIndex.Seek(0, 2)
 	panicOnError("Get key index file length", err)
 
@@ -525,6 +529,10 @@ func (s *ExtentKeyValStore) loadKeyCache() error {
 		panicOnError("Read key data", err)
 		//debugf("searchDbForKeyExists KEY   Entry: %d, BytePosition: %d, Deleted: %t, Key: %s\n", entry, keyPos, deleted, trimTo40(keyData))
 
+		//debugf("searchDbForKeyExists VALUE Entry: %d, BytePosition: %d\n", entry, valuePos)
+
+		s.existsCache.Store(string(keyData), !deleted)
+
 		var valuePos int64
 		_, err = s.valuesIndex.Seek(int64(entry)*8, 0)
 		panicOnError("Seek to current entry in values index file", err)
@@ -533,9 +541,17 @@ func (s *ExtentKeyValStore) loadKeyCache() error {
 			break
 		}
 
-		//debugf("searchDbForKeyExists VALUE Entry: %d, BytePosition: %d\n", entry, valuePos)
+		var nextValuePos int64
+		_, err = s.valuesIndex.Seek(int64(entry+1)*8, 0)
+		panicOnError("Seek to next entry in values index file", err)
+		err = binary.Read(s.valuesIndex, binary.BigEndian, &nextValuePos)
+		if err != nil {
+			break
+		}
 
-		s.existsCache.Store(string(keyData), !deleted)
+		if valuePos > 0 && nextValuePos > 0 {
+			s.valueOffsetCache.Store(string(keyData), [2]int64{valuePos, nextValuePos})
+		}
 
 		entry++
 
@@ -567,7 +583,7 @@ func (s *ExtentKeyValStore) forwardScanForKey(key []byte) ([]byte, bool, error) 
 	checkLastIndexEntry(s.valuesIndex, s.valuesFile)
 	checkIndexSigns(s.keysIndex, s.valuesIndex)
 
-	keysIndexFileLength, err := s.keysFile.Seek(0, 2)
+	keysIndexFileLength, err := s.keysIndex.Seek(0, 2)
 	panicOnError("Seek to end of keys index file", err)
 
 	found, offset, err := s.searchDbForKeyExists(key, s.keysIndex, s.keysFile, s.keysIndexCache)
