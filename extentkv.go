@@ -74,7 +74,7 @@ of caching:
    - An in-memory map (`map[string]bool`) is maintained to track the presence of keys.
    - A key mapped to `true` indicates that it exists; `false` indicates that it has been deleted (a tombstone).
    - If a key is not present, then the status is unknown and the disk is queried.
-   - This map is built via `loadKeyCache()`, which scans the key index and data files using a lock-free mapping function (`LockFreeMapFunc`).
+   - This map is built via `loadKeyAndOffsetCache()`, which scans the key index and data files using a lock-free mapping function (`LockFreeMapFunc`).
    - This cache allows for a fast existence check in methods such as `Exists()` and also aids in the `Get()` operation.
 2.5 **Data Offset Map:**
   - An in-memory map (`map[string][2]int64`) is maintained to track the start and end positions of data in the data file.
@@ -93,7 +93,7 @@ Operational Workflow
    - It validates index integrity by reading the last index entry and comparing
      it to the actual size of the corresponding data file. If mismatches are
      detected, the index file is truncated to the expected size.
-   - Finally, the key existence map is loaded into memory via `loadKeyCache()`,
+   - Finally, the key existence map is loaded into memory via `loadKeyAndOffsetCache()`,
      optionally using the in-memory index cache if enabled.
 
 2. **Insertion/Update (`Put()`):**
@@ -414,12 +414,13 @@ func NewExtentKeyValueStore(directory string, blockSize, filesize int64) (*Exten
 	}
 
 	s.ClearCache()
+	s.loadKeyAndOffsetCache()
 
 	return s, nil
 }
 
 func (s *ExtentKeyValStore) Keys() [][]byte {
-	s.loadKeyCache()
+	s.loadKeyAndOffsetCache()
 	keysstr := s.existsCache.Keys()
 	keys := make([][]byte, len(keysstr))
 	for i, k := range keysstr {
@@ -428,15 +429,20 @@ func (s *ExtentKeyValStore) Keys() [][]byte {
 	return keys
 }
 
-// loadKeyCache loads the entire keys.index and keys.dat files into memory,
+// loadKeyAndOffsetCache loads the entire keys.index and keys.dat files into memory,
 // processing records in forward order. This routine should only be called
 // when EnableIndexCaching is true.
-func (s *ExtentKeyValStore) loadKeyCache() error {
+func (s *ExtentKeyValStore) loadKeyAndOffsetCache() error {
 	s.globalLock.Lock()
 	defer s.globalLock.Unlock()
 	// This routine should only be called when caching is enabled.
 	if !EnableIndexCaching {
-		return fmt.Errorf("loadKeyCache should not be called when caching is disabled")
+		return fmt.Errorf("loadKeyAndOffsetCache should not be called when caching is disabled")
+	}
+
+	if s.existsCache != nil && s.valueOffsetCache != nil {
+		//Cache exists, don't reload it unless it is cleared
+		return nil
 	}
 
 	if s.existsCache == nil {
@@ -644,8 +650,8 @@ func (s *ExtentKeyValStore) readIndexAt(indexFile *os.File, cache []byte, offset
 
 func (s *ExtentKeyValStore) ClearCache() {
 
-	s.existsCache = syncmap.NewSyncMap[string, bool]()
-	s.valueOffsetCache = syncmap.NewSyncMap[string, [2]int64]()
+	s.existsCache = nil
+	s.valueOffsetCache = nil
 }
 
 func (s *ExtentKeyValStore) Put(key, value []byte) error {
@@ -976,13 +982,13 @@ func (s *ExtentKeyValStore) Close() error {
 }
 
 func (s *ExtentKeyValStore) List() ([]string, error) {
-	s.loadKeyCache()
+	s.loadKeyAndOffsetCache()
 	keys := s.existsCache.Keys()
 	return keys, nil
 }
 
 func (s *ExtentKeyValStore) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
-	s.loadKeyCache()
+	s.loadKeyAndOffsetCache()
 	keys := s.existsCache.Keys()
 
 	out := make(map[string]bool)
@@ -1258,7 +1264,7 @@ func (s *ExtentKeyValStore) Exists(key []byte) bool {
 	if EnableIndexCaching {
 		// If the in‑memory cache is empty, load it completely.
 		if s.existsCache.Len() == 0 {
-			if err := s.loadKeyCache(); err != nil {
+			if err := s.loadKeyAndOffsetCache(); err != nil {
 				// If the cache cannot be loaded, fall back to the previous behavior.
 				s.globalLock.Lock()
 				defer s.globalLock.Unlock()
