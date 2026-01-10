@@ -716,7 +716,8 @@ func (s *ExtentKeyValStore) Put(key, value []byte) error {
 	err := func() error {
 		s.globalLock.Lock()
 		defer s.globalLock.Unlock()
-		s.ClearCache()
+		s.keysIndexCache = nil
+		s.valuesIndexCache = nil
 
 		checkLastIndexEntry(s.keysIndex, s.keysFile)
 		checkLastIndexEntry(s.valuesIndex, s.valuesFile)
@@ -835,7 +836,8 @@ func (s *ExtentKeyValStore) Put(key, value []byte) error {
 		checkLastIndexEntry(s.keysIndex, s.keysFile)
 		checkLastIndexEntry(s.valuesIndex, s.valuesFile)
 		checkIndexSigns(s.keysIndex, s.valuesIndex)
-		s.ClearCache()
+		s.existsCache.Store(string(key), true)
+		s.valueOffsetCache.Store(string(key), [2]int64{origEndOfValuesFile, newEndOfValuesFile})
 		return nil
 	}()
 	if err != nil {
