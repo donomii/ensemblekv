@@ -353,11 +353,12 @@ func NewExtentKeyValueStore(directory string, blockSize, filesize int64) (*Exten
 		// Get the difference between the expected size and the actual size
 		diff := keysFileEnd - stat.Size()
 		if diff < 0 {
-			debugf("Index position is larger than actual keys file size: %d, cannot recover automatically\n", diff)
+			fmt.Printf("Index position is larger than actual keys file size: %d, cannot recover automatically\n", diff)
 		}
 		if diff > 1024 {
-			debugf("Difference between recorded end of keys file(in index) and actual end of file is too large: %d bytes.  Refusing to truncate, cannot recover from corrupted file\n", diff)
-			os.Exit(1)
+			msg := fmt.Sprintf("Difference between recorded end of keys file(in index) and actual end of file is too large: %d bytes.  Refusing to truncate, cannot recover from corrupted file\n", diff)
+			fmt.Println(msg)
+			panic(msg)
 		}
 		debugf("Keys file is larger than recorded in keys index.  Truncating keys index file %s to %d\n", keysFilePath, keysFileEnd)
 		keysFile.Truncate(keysFileEnd)
@@ -398,8 +399,9 @@ func NewExtentKeyValueStore(directory string, blockSize, filesize int64) (*Exten
 			debugf("Index position is larger than actual values file size: %d, cannot recover automatically\n", diff)
 		}
 		if diff > 8 {
-			debugf("Difference between recorded end of file and actual end of file is too large: %d, refusing to truncate, cannot recover from corrupted file\n", diff)
-			os.Exit(1)
+			msg := fmt.Sprintf("Difference between recorded end of file and actual end of file is too large: %d, refusing to truncate, cannot recover from corrupted file\n", diff)
+			fmt.Println(msg)
+			panic(msg)
 		}
 		debugf("Values file is larger than recorded in values index.  Truncating values index file %s to %d\n", valuesFilePath, valuesFileEnd)
 		valuesFile.Truncate(valuesFileEnd)
