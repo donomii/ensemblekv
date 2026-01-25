@@ -339,6 +339,7 @@ func NewExtentKeyValueStore(directory string, blockSize, filesize int64) (*Exten
 	}
 
 	//Read the last index item to get the end of the file.  If this is different to the file size, then the file is corrupt and we should truncate it to size
+	keysIndexStat, _ := keysIndex.Stat()
 	_, err = keysIndex.Seek(-8, 2)
 	panicOnError("Seek to last entry in keys index file", err)
 	var keysFileEnd int64
@@ -349,6 +350,22 @@ func NewExtentKeyValueStore(directory string, blockSize, filesize int64) (*Exten
 	}
 
 	stat, _ = keysFile.Stat()
+
+	// Check for zero entry (OS wrote zeros instead of real data) - recover using previous entry
+	if keysFileEnd == 0 && keysIndexStat.Size() > 8 {
+		fmt.Printf("Recovery: keys index last entry is zero (corruption), falling back to previous entry\n")
+		_, err = keysIndex.Seek(-16, 2)
+		panicOnError("Seek to second-to-last entry in keys index file", err)
+		err = binary.Read(keysIndex, binary.BigEndian, &keysFileEnd)
+		panicOnError("Read second-to-last entry in keys index file", err)
+		if keysFileEnd < 0 {
+			keysFileEnd = -keysFileEnd
+		}
+		// Truncate the index to remove the bad entry
+		fmt.Printf("Recovery: truncating keys index from %d to %d bytes\n", keysIndexStat.Size(), keysIndexStat.Size()-8)
+		keysIndex.Truncate(keysIndexStat.Size() - 8)
+	}
+
 	if keysFileEnd != stat.Size() {
 		// Get the difference between the expected size and the actual size
 		diff := keysFileEnd - stat.Size()
@@ -383,6 +400,7 @@ func NewExtentKeyValueStore(directory string, blockSize, filesize int64) (*Exten
 	}
 
 	//Read the last index item to get the end of the file.  If this is different to the file size, then the file is corrupt and we should truncate it to size
+	valuesIndexStat, _ := valuesIndex.Stat()
 	_, err = valuesIndex.Seek(-8, 2)
 	panicOnError("Seek to last entry in values index file", err)
 	var valuesFileEnd int64
@@ -391,7 +409,24 @@ func NewExtentKeyValueStore(directory string, blockSize, filesize int64) (*Exten
 	if valuesFileEnd < 0 {
 		valuesFileEnd = -valuesFileEnd
 	}
+
 	stat, _ = valuesFile.Stat()
+
+	// Check for zero entry (OS wrote zeros instead of real data) - recover using previous entry
+	if valuesFileEnd == 0 && valuesIndexStat.Size() > 8 {
+		fmt.Printf("Recovery: values index last entry is zero (corruption), falling back to previous entry\n")
+		_, err = valuesIndex.Seek(-16, 2)
+		panicOnError("Seek to second-to-last entry in values index file", err)
+		err = binary.Read(valuesIndex, binary.BigEndian, &valuesFileEnd)
+		panicOnError("Read second-to-last entry in values index file", err)
+		if valuesFileEnd < 0 {
+			valuesFileEnd = -valuesFileEnd
+		}
+		// Truncate the index to remove the bad entry
+		fmt.Printf("Recovery: truncating values index from %d to %d bytes\n", valuesIndexStat.Size(), valuesIndexStat.Size()-8)
+		valuesIndex.Truncate(valuesIndexStat.Size() - 8)
+	}
+
 	if valuesFileEnd != stat.Size() {
 		// Get the difference between the expected size and the actual size
 		diff := valuesFileEnd - stat.Size()
