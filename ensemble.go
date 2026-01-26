@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // This is ensemblekv, a key-value store that uses multiple sub-stores to store data. It is designed to be used with large data sets that do not fit into other kv stores, while still being able to use the features of those kv stores.
@@ -50,6 +51,7 @@ type EnsembleKv struct {
 	DefaultOps
 	directory   string
 	substores   []KvLike
+	flushStore  []bool
 	hashFunc    HashFunc
 	N           int64
 	maxKeys     int64
@@ -59,6 +61,7 @@ type EnsembleKv struct {
 	generation  int64
 	createStore CreatorFunc
 	filesize    int64
+	running     bool
 }
 
 func NewEnsembleKv(directory string, N, maxBlock, maxKeys, filesie int64, createStore CreatorFunc) (*EnsembleKv, error) {
@@ -87,7 +90,29 @@ func NewEnsembleKv(directory string, N, maxBlock, maxKeys, filesie int64, create
 
 	store.saveMetadata()
 
+	store.flushStore = make([]bool, len(store.substores))
+
+	go store.flushWorker()
+	store.running = true
+
 	return store, nil
+}
+
+func (s *EnsembleKv) flushWorker() {
+	// Periodically flush the substores to disk
+	for {
+		time.Sleep(10 * time.Second)
+		for i, substore := range s.substores {
+			if !s.running {
+				continue
+			}
+			if err := substore.Flush(); err != nil {
+				fmt.Printf("Error flushing substore %d: %v\n", i, err)
+			} else {
+				s.flushStore[i] = false
+			}
+		}
+	}
 }
 
 // setup initializes the store by creating the directory structure and substores.
@@ -131,6 +156,9 @@ func (s *EnsembleKv) hashToIndex(hash uint64) int {
 func (s *EnsembleKv) KeyHistory(key []byte) ([][]byte, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	if !s.running {
+		return nil, fmt.Errorf("store is closed")
+	}
 
 	// Combined history from all substores
 	allHistory := make([][]byte, 0)
@@ -165,6 +193,9 @@ func (s *EnsembleKv) KeyHistory(key []byte) ([][]byte, error) {
 func (s *EnsembleKv) Keys() [][]byte {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	if !s.running {
+		return nil
+	}
 
 	var keys [][]byte
 
@@ -179,7 +210,9 @@ func (s *EnsembleKv) Keys() [][]byte {
 
 // Get retrieves a value for a given key from the appropriate substore.
 func (s *EnsembleKv) Get(key []byte) ([]byte, error) {
-
+	if !s.running {
+		return nil, fmt.Errorf("store is closed")
+	}
 	hash := s.hashFunc(key)
 	index := s.hashToIndex(hash)
 	//fmt.Printf("Getting key %v from substore %d\n", clampString(string(key), 100), index) //FIXME make debug log
@@ -197,7 +230,9 @@ func clampString(in string, length int) string {
 
 // Adjusted Put method to track the total number of keys and trigger rebalance if needed.
 func (s *EnsembleKv) Put(key []byte, val []byte) error {
-
+	if !s.running {
+		return fmt.Errorf("store is closed")
+	}
 	hash := s.hashFunc(key)
 	index := s.hashToIndex(hash)
 	//fmt.Printf("Putting key %v in substore %d.  %v keys in total\n", clampString(string(key), 100), index, s.totalKeys) //FIXME make debug log
@@ -208,6 +243,8 @@ func (s *EnsembleKv) Put(key []byte, val []byte) error {
 	// Increment total key count
 	s.totalKeys = s.totalKeys + 1
 
+	s.flushStore[index] = true
+
 	return nil
 }
 
@@ -215,12 +252,17 @@ func (s *EnsembleKv) Put(key []byte, val []byte) error {
 func (s *EnsembleKv) Delete(key []byte) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	if !s.running {
+		return fmt.Errorf("store is closed")
+	}
 
 	hash := s.hashFunc(key)
 	index := s.hashToIndex(hash)
 
 	// Decriment total key count
 	s.totalKeys = s.totalKeys - 1
+
+	s.flushStore[index] = true
 	return s.substores[index].Delete(key)
 }
 
@@ -228,6 +270,9 @@ func (s *EnsembleKv) Delete(key []byte) error {
 func (s *EnsembleKv) Exists(key []byte) bool {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	if !s.running {
+		return false
+	}
 
 	hash := s.hashFunc(key)
 	index := s.hashToIndex(hash)
@@ -238,6 +283,9 @@ func (s *EnsembleKv) Exists(key []byte) bool {
 func (s *EnsembleKv) Flush() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	if !s.running {
+		return fmt.Errorf("store is closed")
+	}
 
 	for _, substore := range s.substores {
 		if err := substore.Flush(); err != nil {
@@ -251,6 +299,7 @@ func (s *EnsembleKv) Flush() error {
 func (s *EnsembleKv) Close() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	s.running = false
 
 	for _, substore := range s.substores {
 		if err := substore.Close(); err != nil {

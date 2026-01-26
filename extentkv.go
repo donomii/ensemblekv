@@ -692,6 +692,7 @@ func (s *ExtentKeyValStore) ClearCache() {
 }
 
 func (s *ExtentKeyValStore) Put(key, value []byte) error {
+	s.loadKeyAndOffsetCache()
 	err := func() error {
 		s.globalLock.Lock()
 		defer s.globalLock.Unlock()
@@ -852,6 +853,7 @@ func readNbytes(file *os.File, n int) ([]byte, error) {
 
 // --- Modify Get() similarly to update the counters.
 func (s *ExtentKeyValStore) Get(key []byte) ([]byte, error) {
+	s.loadKeyAndOffsetCache()
 	s.maybePrintCacheStats() // Increment request counter and print stats every 100th call
 	checkLastIndexEntry(s.keysIndex, s.keysFile)
 	checkLastIndexEntry(s.valuesIndex, s.valuesFile)
@@ -1299,17 +1301,7 @@ func (s *ExtentKeyValStore) Exists(key []byte) bool {
 	s.maybePrintCacheStats() // Increment request counter and print stats every 100th call
 
 	if EnableIndexCaching {
-		// If the in‑memory cache is empty, load it completely.
-		if s.existsCache.Len() == 0 {
-			if err := s.loadKeyAndOffsetCache(); err != nil {
-				// If the cache cannot be loaded, fall back to the previous behavior.
-				s.globalLock.Lock()
-				defer s.globalLock.Unlock()
-				found, _, err := s.searchDbForKeyExists(key, s.keysIndex, s.keysFile)
-				return err == nil && found
-			}
-		}
-
+		s.loadKeyAndOffsetCache()
 		state, exists := s.existsCache.Load(string(key))
 		if exists {
 			s.cacheHits++ // found in cache
