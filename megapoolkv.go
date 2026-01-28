@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"strconv"
 	"unsafe"
@@ -36,8 +37,7 @@ type MegaNode struct {
 	DataLen    int64
 	Right      int64
 	Left       int64
-	BumperL    int32
-	_          int32 // Padding to align to 64 bytes
+	BumperL    int64
 }
 
 // MegaPool is the main structure for the KV store.
@@ -269,6 +269,57 @@ func (p *MegaPool) Put(key, value []byte) error {
 	return nil
 }
 
+func (p *MegaPool) enforceBounds(nodeOffset int64) error {
+	node := p.nodeAt(nodeOffset)
+	if node == nil {
+		return nil
+	}
+	if node.Left < 0 {
+		fmt.Printf("corrupted tree: left child of node at %d is invalid(%v)\n", nodeOffset, node.Left)
+		node.Left = 0
+	}
+	if node.Right < 0 {
+		fmt.Printf("corrupted tree: right child of node at %d is invalid(%v)\n", nodeOffset, node.Right)
+		node.Right = 0
+	}
+
+	if node.Left >= p.header.Size-int64(unsafe.Sizeof(MegaNode{})) {
+		fmt.Printf("corrupted tree: left child of node at %d is invalid(%v greater than file size %v)\n", nodeOffset, node.Left, p.header.Size)
+		node.Left = 0
+	}
+	if node.Right >= p.header.Size-int64(unsafe.Sizeof(MegaNode{})) {
+		fmt.Printf("corrupted tree: right child of node at %d is invalid(%v greater than file size %v)\n", nodeOffset, node.Right, p.header.Size)
+		node.Right = 0
+	}
+	if node.KeyOffset+node.KeyLen >= p.header.Size {
+		fmt.Printf("corrupted tree: key of node at %d is invalid(%v greater than file size %v)\n", nodeOffset, node.KeyOffset+node.KeyLen, p.header.Size)
+		node.KeyOffset = 0
+		node.KeyLen = 0
+	}
+	if node.DataOffset+node.DataLen >= p.header.Size {
+		fmt.Printf("corrupted tree: data of node at %d is invalid(%v greater than file size %v)\n", nodeOffset, node.DataOffset+node.DataLen, p.header.Size)
+		node.DataOffset = 0
+		node.DataLen = 0
+	}
+
+	if node.KeyOffset < 0 {
+		fmt.Printf("corrupted tree: key of node at %d is invalid(%v less than 0)\n", nodeOffset, node.KeyOffset)
+		node.KeyOffset = 0
+		node.KeyLen = 0
+	}
+	if node.DataOffset < 0 {
+		fmt.Printf("corrupted tree: data of node at %d is invalid(%v less than 0)\n", nodeOffset, node.DataOffset)
+		node.DataOffset = 0
+		node.DataLen = 0
+	}
+
+	if node.Bumper != ^node.BumperL {
+		fmt.Printf("corrupted tree: bumper mismatch at %d\n", nodeOffset)
+		panic("corrupted tree: bumper mismatch")
+	}
+	return nil
+}
+
 // insert recursive function
 func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, valLen int64) (int64, error) {
 	if nodeOffset == 0 {
@@ -286,12 +337,14 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 		node.DataLen = valLen
 		node.Left = 0
 		node.Right = 0
-		node.Bumper = 0
-		node.BumperL = 0
-
+		// Random bumper
+		node.Bumper = rand.Int64()
+		// Invert Bumper
+		node.BumperL = ^node.Bumper
 		return newOffset, nil
 	}
 
+	p.enforceBounds(nodeOffset)
 	node := p.nodeAt(nodeOffset)
 	if node == nil {
 		return 0, errors.New("corrupted tree: invalid node offset")
@@ -329,6 +382,7 @@ func (p *MegaPool) Get(key []byte) ([]byte, error) {
 	if nodeOffset == 0 {
 		return nil, os.ErrNotExist // Not found
 	}
+	p.enforceBounds(nodeOffset)
 	node := p.nodeAt(nodeOffset)
 	// Return a copy to be safe, or direct slice if read-only is fine.
 	// Returning copy is safer for general usage.
