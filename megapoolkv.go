@@ -234,7 +234,16 @@ func (p *MegaPool) nodeAt(offset int64) *MegaNode {
 		return nil
 	}
 	// Unsafe casting to access struct at offset
-	return (*MegaNode)(unsafe.Pointer(&p.data[offset]))
+	node := (*MegaNode)(unsafe.Pointer(&p.data[offset]))
+	// Now access the members to make sure they are valid
+	test := node.Left + node.Right + node.KeyOffset + node.DataOffset + node.DataLen + node.Bumper + node.BumperL + node.Bumper
+	if test < 0 { // Golang :(
+		return nil
+	}
+	if node.Bumper != ^node.BumperL {
+		panic("corrupted node at " + strconv.FormatInt(offset, 10))
+	}
+	return node
 }
 
 // Helper to read byte slice from offset
@@ -330,7 +339,7 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 			return 0, err
 		}
 
-		node := p.nodeAt(newOffset)
+		node := (*MegaNode)(unsafe.Pointer(&p.data[newOffset]))
 		node.KeyOffset = keyOff
 		node.KeyLen = keyLen
 		node.DataOffset = valOff
