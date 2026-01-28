@@ -1,6 +1,7 @@
 package ensemblekv
 
 import (
+	"bytes"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
@@ -354,29 +355,28 @@ func (s *EnsembleKv) loadMetadata() error {
 // Implementation of the MapFunc method for the Store. This method applies a function to each key-value pair in all substores.
 
 func (s *EnsembleKv) MapFunc(f func(key []byte, value []byte) error) (map[string]bool, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	// Snapshot keys first to avoid holding lock during callback
+	keys := s.Keys() // Keys() handles its own locking
 
-	return lockFreeMapFunc(s.substores, f)
-}
+	visited := make(map[string]bool)
 
-// Implementation of the MapFunc method for the Store. This method applies a function to each key-value pair in all substores.
-
-func lockFreeMapFunc(substores []KvLike, f func(key []byte, value []byte) error) (map[string]bool, error) {
-
-	// Iterate over each substore
-	for _, substore := range substores {
-		// Use the MapFunc of each substore, passing the function 'f'
-		_, err := substore.MapFunc(func(key []byte, value []byte) error {
-			// Call the function 'f' for each key-value pair
-			return f(key, value)
-		})
+	for _, key := range keys {
+		// Get value for each key (thread-safe, handles hashing internally)
+		val, err := s.Get(key)
 		if err != nil {
-			return nil, err // Return error if any occurs
+			// Key might have been deleted concurrently
+			continue
+		}
+
+		visited[string(key)] = true
+
+		// Call user function without holding ensemble lock
+		if err := f(key, val); err != nil {
+			return visited, err
 		}
 	}
 
-	return nil, nil // Return nil if the operation completes successfully on all substores
+	return visited, nil
 }
 
 // Size returns the total number of keys in the store.
@@ -392,22 +392,27 @@ func (s *EnsembleKv) Size() int64 {
 }
 
 func (s *EnsembleKv) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	// Snapshot keys first
+	keys := s.Keys() // Keys() handles its own locking
 
-	keys := make(map[string]bool)
+	visited := make(map[string]bool)
 
-	// Iterate over each substore and call MapPrefixFunc
-	for _, substore := range s.substores {
-		subKeys, err := substore.MapPrefixFunc(prefix, f)
-		if err != nil {
-			return keys, err
+	for _, key := range keys {
+		if !bytes.HasPrefix(key, prefix) {
+			continue
 		}
-		// Merge the keys from this substore
-		for k, v := range subKeys {
-			keys[k] = v
+
+		val, err := s.Get(key)
+		if err != nil {
+			continue
+		}
+
+		visited[string(key)] = true
+
+		if err := f(key, val); err != nil {
+			return visited, err
 		}
 	}
 
-	return keys, nil
+	return visited, nil
 }

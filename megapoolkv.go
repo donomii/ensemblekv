@@ -485,9 +485,8 @@ func (p *MegaPool) flush() error {
 
 // MapFunc applies a function to all key-value pairs.
 func (p *MegaPool) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	keys := p.keys()
+
+	keys := p.Keys()
 
 	processed := make(map[string]bool)
 	for _, key := range keys {
@@ -505,10 +504,8 @@ func (p *MegaPool) MapFunc(f func([]byte, []byte) error) (map[string]bool, error
 
 // MapPrefixFunc applies a function to key-value pairs with a prefix.
 func (p *MegaPool) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
 	processed := make(map[string]bool)
-	keys := p.keys()
+	keys := p.Keys()
 	for _, key := range keys {
 		if bytes.HasPrefix(key, prefix) {
 			val, err := p.Get(key)

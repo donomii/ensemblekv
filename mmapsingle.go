@@ -260,8 +260,13 @@ func (kv *MmapSingleKV) Get(key []byte) ([]byte, error) {
 }
 
 func (kv *MmapSingleKV) Keys() [][]byte {
-	var keys [][]byte
-	panic("not implemented")
+	kv.mutex.RLock()
+	defer kv.mutex.RUnlock()
+
+	keys := make([][]byte, 0, len(kv.index))
+	for k := range kv.index {
+		keys = append(keys, []byte(k))
+	}
 	return keys
 }
 
@@ -350,32 +355,27 @@ func (kv *MmapSingleKV) Close() error {
 }
 
 func (kv *MmapSingleKV) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
-	kv.mutex.RLock()
-	defer kv.mutex.RUnlock()
+	// Snapshot keys first
+	keys := kv.Keys() // Keys() handles its own locking
 
-	keys := make(map[string]bool)
+	visited := make(map[string]bool)
 
-	for key, offset := range kv.index {
-		// Read entry at offset using unsafe for speed
-		keyLen := *(*uint32)(unsafe.Pointer(&kv.data[offset+8]))
-		valueLen := *(*uint32)(unsafe.Pointer(&kv.data[offset+12]))
-
-		if valueLen == deletedMarker {
-			continue // Skip deleted entries
+	for _, key := range keys {
+		// Fetch value for each key (thread-safe)
+		val, err := kv.Get(key)
+		if err != nil {
+			continue // Deleted concurrently
 		}
 
-		keyBytes := []byte(key)
-		valueOffset := offset + headerSize + int64(keyLen)
-		value := make([]byte, valueLen)
-		copy(value, kv.data[valueOffset:valueOffset+int64(valueLen)])
+		visited[string(key)] = true
 
-		keys[key] = true
-		if err := f(keyBytes, value); err != nil {
-			return keys, err
+		// Callback without lock
+		if err := f(key, val); err != nil {
+			return visited, err
 		}
 	}
 
-	return keys, nil
+	return visited, nil
 }
 
 func (kv *MmapSingleKV) KeyHistory(key []byte) ([][]byte, error) {
@@ -403,16 +403,28 @@ func (kv *MmapSingleKV) KeyHistory(key []byte) ([][]byte, error) {
 }
 
 func (kv *MmapSingleKV) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
-	// MmapSingleKV doesn't have native prefix support, so filter through MapFunc
-	keys := make(map[string]bool)
-	_, err := kv.MapFunc(func(k, v []byte) error {
-		if bytes.HasPrefix(k, prefix) {
-			keys[string(k)] = true
-			return f(k, v)
+	// Snapshot keys first
+	keys := kv.Keys() // Keys() handles its own locking
+
+	visited := make(map[string]bool)
+
+	for _, key := range keys {
+		if !bytes.HasPrefix(key, prefix) {
+			continue
 		}
-		return nil
-	})
-	return keys, err
+
+		val, err := kv.Get(key)
+		if err != nil {
+			continue
+		}
+
+		visited[string(key)] = true
+
+		if err := f(key, val); err != nil {
+			return visited, err
+		}
+	}
+	return visited, nil
 }
 
 // Helper function to get timestamp for entries
