@@ -234,7 +234,7 @@ func (p *MegaPool) InsertData(data []byte) (int64, error) {
 
 func (p *MegaPool) insertData(data []byte) (int64, error) {
 	if len(data) == 0 {
-		panic("zero length data not allowed")
+		return 0, nil
 	}
 	l := int64(len(data))
 	offset, err := p.alloc(l)
@@ -273,6 +273,9 @@ func (p *MegaPool) readBytes(offset, length int64) []byte {
 	if offset <= 0 || length <= 0 || offset+length > int64(len(p.data)) {
 		return nil
 	}
+	if length < 1 {
+		return nil
+	}
 	return p.data[offset : offset+length]
 }
 
@@ -280,11 +283,15 @@ func (p *MegaPool) readBytes(offset, length int64) []byte {
 func (p *MegaPool) Put(key, value []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	var err error
 
 	// Implement "write data first" policy
-	keyOffset, err := p.insertData(key)
-	if err != nil {
-		return err
+	keyOffset := int64(-1)
+	if len(key) > 0 {
+		keyOffset, err = p.insertData(key)
+		if err != nil {
+			return err
+		}
 	}
 	valOffset := int64(-1)
 	if len(value) > 0 {
@@ -447,13 +454,16 @@ func (p *MegaPool) Get(key []byte) ([]byte, error) {
 
 func (p *MegaPool) get(key []byte) ([]byte, error) {
 	nodeOffset := p.search(p.header.BtreeRoot, key)
-	if nodeOffset == 0 {
+	if nodeOffset < 1 {
 		return nil, os.ErrNotExist // Not found
 	}
 	p.enforceBounds(nodeOffset)
 	node := p.nodeAt(nodeOffset)
 	// Return a copy to be safe, or direct slice if read-only is fine.
 	// Returning copy is safer for general usage.
+	if node.DataLen < 1 {
+		return nil, nil
+	}
 	data := p.readBytes(node.DataOffset, node.DataLen)
 	out := make([]byte, len(data))
 	copy(out, data)
@@ -461,11 +471,18 @@ func (p *MegaPool) get(key []byte) ([]byte, error) {
 }
 
 func (p *MegaPool) search(nodeOffset int64, key []byte) int64 {
-	if nodeOffset == 0 {
+	if nodeOffset < 1 {
 		return 0
 	}
 	node := p.nodeAt(nodeOffset)
 	if node == nil {
+		return 0
+	}
+
+	if node.KeyLen < 1 {
+		if len(key) < 1 {
+			return nodeOffset
+		}
 		return 0
 	}
 
@@ -599,9 +616,10 @@ func (p *MegaPool) DumpIndex() error {
 
 // iterate performs an in-order traversal of the tree.
 func (p *MegaPool) iterate(nodeOffset int64, f func([]byte, []byte) error) error {
-	if nodeOffset == 0 {
+	if nodeOffset < 1 {
 		return nil
 	}
+	p.enforceBounds(nodeOffset)
 	node := p.nodeAt(nodeOffset)
 	if node == nil {
 		return errors.New("invalid node offset in iteration")
@@ -613,8 +631,13 @@ func (p *MegaPool) iterate(nodeOffset int64, f func([]byte, []byte) error) error
 	}
 
 	// Current
-	key := p.readBytes(node.KeyOffset, node.KeyLen)
-	val := p.readBytes(node.DataOffset, node.DataLen)
+	var key, val []byte
+	if node.KeyLen > 0 {
+		key = p.readBytes(node.KeyOffset, node.KeyLen)
+	}
+	if node.DataLen > 0 {
+		val = p.readBytes(node.DataOffset, node.DataLen)
+	}
 	if err := f(key, val); err != nil {
 		return err
 	}
