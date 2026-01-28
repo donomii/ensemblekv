@@ -393,12 +393,20 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 			return 0, err
 		}
 		p.nodeAt(nodeOffset).Left = left
+		// Balance
+		if p.nodeAt(left).Bumper > p.nodeAt(nodeOffset).Bumper {
+			nodeOffset = p.rotateRight(nodeOffset)
+		}
 	} else if cmp > 0 {
 		right, err := p.insert(node.Right, key, keyOff, valOff, keyLen, valLen)
 		if err != nil {
 			return 0, err
 		}
 		p.nodeAt(nodeOffset).Right = right
+		// Balance
+		if p.nodeAt(right).Bumper > p.nodeAt(nodeOffset).Bumper {
+			nodeOffset = p.rotateLeft(nodeOffset)
+		}
 	} else {
 		// Update existing node
 		// "Update pointers last" - we update the DataOffset/Len
@@ -410,10 +418,34 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 	return nodeOffset, nil
 }
 
+func (p *MegaPool) rotateRight(rootOffset int64) int64 {
+	root := p.nodeAt(rootOffset)
+	newRootOffset := root.Left
+	newRoot := p.nodeAt(newRootOffset)
+
+	root.Left = newRoot.Right
+	newRoot.Right = rootOffset
+	return newRootOffset
+}
+
+func (p *MegaPool) rotateLeft(rootOffset int64) int64 {
+	root := p.nodeAt(rootOffset)
+	newRootOffset := root.Right
+	newRoot := p.nodeAt(newRootOffset)
+
+	root.Right = newRoot.Left
+	newRoot.Left = rootOffset
+	return newRootOffset
+}
+
 // Get retrieves a value by key.
 func (p *MegaPool) Get(key []byte) ([]byte, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+	return p.get(key)
+}
+
+func (p *MegaPool) get(key []byte) ([]byte, error) {
 	nodeOffset := p.search(p.header.BtreeRoot, key)
 	if nodeOffset == 0 {
 		return nil, os.ErrNotExist // Not found
@@ -542,7 +574,9 @@ func (p *MegaPool) keys() [][]byte {
 
 // KeyHistory returns the history of a key. MegaPool only stores current value.
 func (p *MegaPool) KeyHistory(key []byte) ([][]byte, error) {
-	val, err := p.Get(key)
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	val, err := p.get(key)
 	if err != nil {
 		return nil, err
 	}
