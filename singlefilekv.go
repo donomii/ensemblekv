@@ -817,37 +817,28 @@ func (lsm *SingleFileLSM) Close() error {
 
 // MapFunc iterates over all key-value pairs
 func (lsm *SingleFileLSM) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
-	lsm.mutex.RLock()
-	defer lsm.mutex.RUnlock()
+	// Get all keys first (snapshot) to separate iteration from modification
+	keys := lsm.Keys() // Keys() handles its own locking
 
-	if lsm.closed {
-		return nil, fmt.Errorf("store is closed")
-	}
+	processed := make(map[string]bool)
 
-	keys := make(map[string]bool)
+	for _, key := range keys {
+		// Get value for each key (thread-safe, fine-grained locking)
+		val, err := lsm.Get(key)
+		if err != nil {
+			// Key might have been deleted concurrently
+			continue
+		}
 
-	// Iterate over SSTables
-	for i := range lsm.sstables {
-		meta := &lsm.sstables[i]
-		if err := lsm.iterateSSTable(meta, f, keys); err != nil {
-			return keys, err
+		processed[string(key)] = true
+
+		// Call user function without holding store lock
+		if err := f(key, val); err != nil {
+			return processed, err
 		}
 	}
 
-	// Iterate over memtable (overrides SSTable values)
-	for k, v := range lsm.memTable {
-		keyBytes := []byte(k)
-		if v == nil {
-			keys[k] = false
-		} else {
-			if err := f(keyBytes, v); err != nil {
-				return keys, err
-			}
-			keys[k] = true
-		}
-	}
-
-	return keys, nil
+	return processed, nil
 }
 
 // iterateSSTable iterates over all entries in an SSTable
@@ -924,17 +915,34 @@ func (lsm *SingleFileLSM) iterateSSTable(meta *sstableMetadata, f func([]byte, [
 }
 
 // MapPrefixFunc iterates over all key-value pairs with the given prefix
+// MapPrefixFunc iterates over all key-value pairs with the given prefix
 func (lsm *SingleFileLSM) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
-	keys := make(map[string]bool)
+	// Get all keys first (snapshot)
+	keys := lsm.Keys() // Keys() handles its own locking
 
-	_, err := lsm.MapFunc(func(k, v []byte) error {
-		if bytes.HasPrefix(k, prefix) {
-			return f(k, v)
+	processed := make(map[string]bool)
+
+	for _, key := range keys {
+		if !bytes.HasPrefix(key, prefix) {
+			continue
 		}
-		return nil
-	})
 
-	return keys, err
+		// Get value for each key (thread-safe, fine-grained locking)
+		val, err := lsm.Get(key)
+		if err != nil {
+			// Key might have been deleted concurrently
+			continue
+		}
+
+		processed[string(key)] = true
+
+		// Call user function without holding store lock
+		if err := f(key, val); err != nil {
+			return processed, err
+		}
+	}
+
+	return processed, nil
 }
 
 // DumpIndex prints the index for debugging

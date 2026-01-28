@@ -134,11 +134,15 @@ func (s *SQLiteKV) Size() int64 {
 	return count
 }
 
-func (s *SQLiteKV) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
+func (s *SQLiteKV) getRows(query string, args ...any) (*sql.Rows, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.db.Query(query, args...)
+}
 
-	rows, err := s.db.Query(`SELECT key, value FROM kv_store`)
+func (s *SQLiteKV) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
+
+	rows, err := s.getRows(`SELECT key, value FROM kv_store`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite map query: %w", err)
 	}
@@ -208,12 +212,10 @@ func (s *SQLiteKV) KeyHistory(key []byte) ([][]byte, error) {
 }
 
 func (s *SQLiteKV) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	// SQLite supports LIKE operator for prefix matching
 	prefixStr := string(prefix) + "%"
-	rows, err := s.db.Query(`SELECT key, value FROM kv_store WHERE key LIKE ?`, prefixStr)
+	rows, err := s.getRows(`SELECT key, value FROM kv_store WHERE key LIKE ?`, prefixStr)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite prefix query: %w", err)
 	}
