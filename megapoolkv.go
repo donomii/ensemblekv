@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -69,7 +70,6 @@ func OpenMegaPool(path string, size int64) (*MegaPool, error) {
 
 	if size > 0 && fileSize != size {
 		if size > fileSize {
-			// Resize (grow) if requested size is larger
 			// Resize (grow) if requested size is larger.
 			if err := f.Truncate(size); err != nil {
 				f.Close()
@@ -82,7 +82,7 @@ func OpenMegaPool(path string, size int64) (*MegaPool, error) {
 		}
 	} else if size == 0 && fileSize == 0 {
 		// Default size if not specified and new file
-		size = 10 * 1024 * 1024 // 10MB default
+		size = 1 * 1024 * 1024 // 1MB default
 		if err := f.Truncate(size); err != nil {
 			f.Close()
 			return nil, err
@@ -148,22 +148,26 @@ func (p *MegaPool) Alloc(size int64) (int64, error) {
 	}
 
 	start := p.header.StartFree
-	newFree := start + size
+	neededFileSize := start + size
 
 	// Check for overflow and resize if needed
-	if newFree > p.header.Size {
+	if neededFileSize > p.header.Size {
 		// Calculate new size (at least double, or fit the new allocation)
-		newSize := p.header.Size * 2
-		if newFree > newSize {
-			newSize = newFree + (1024 * 1024) // Add 1MB padding
+		extendSize := size * 2
+		if extendSize < 1024*1024 {
+			extendSize = 1024 * 1024
+		}
+		newFileSize := p.header.Size + extendSize
+		if neededFileSize > newFileSize {
+			panic("Could not extend file")
 		}
 
-		if err := p.resize(newSize); err != nil {
+		if err := p.resize(newFileSize); err != nil {
 			return 0, fmt.Errorf("failed to resize pool: %v", err)
 		}
 	}
 
-	p.header.StartFree = newFree
+	p.header.StartFree = neededFileSize
 	return start, nil
 }
 
@@ -171,29 +175,34 @@ func (p *MegaPool) Alloc(size int64) (int64, error) {
 func (p *MegaPool) resize(newSize int64) error {
 	// Sync current data before unmapping
 	// (Optional but good for safety)
-	// p.Flush()
+	p.Flush()
 
 	// 1. Unmap current data
 	if err := unix.Munmap(p.data); err != nil {
-		return err
+		panic("Failed to unmap data file:" + p.path + ": " + err.Error())
 	}
 	p.data = nil
 	p.header = nil // Invalidated
 
 	// 2. Truncate file to new size
+	// Check that the new size is greater than the current size
+	if newSize <= p.header.Size {
+		panic("New size(" + strconv.FormatInt(newSize, 10) + ") is less than or equal to current size(" + strconv.FormatInt(p.header.Size, 10) + ")")
+	}
 	if err := p.file.Truncate(newSize); err != nil {
-		return err
+		panic("Failed to truncate file:" + p.path + " to size:" + strconv.FormatInt(newSize, 10) + ": " + err.Error())
 	}
 
 	// 3. Remap
 	data, err := unix.Mmap(int(p.file.Fd()), 0, int(newSize), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
 	if err != nil {
-		return err
+		panic("Failed to remap file:" + p.path + " to size:" + strconv.FormatInt(newSize, 10) + ": " + err.Error())
 	}
 
 	p.data = data
 	p.header = (*MegaHeader)(unsafe.Pointer(&p.data[0]))
 	p.header.Size = newSize // Update size in header
+	p.Flush()               //Make sure all these changes are safely written to disk
 
 	return nil
 }
