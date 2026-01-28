@@ -39,6 +39,7 @@ func StartKVStoreOperations(t *testing.T, creator CreatorFunc, storeName string)
 			KVStoreOperations(t, store, storeName)
 			MixedSizeKeyValuePairs(t, store, storeName)
 			FuzzKeyValueOperations(t, store, storeName)
+			ConcurrentMapFuncTests(t, store, storeName)
 
 			// Run persistence tests
 			runFailfast(t, "Persistence", func(t *testing.T) {

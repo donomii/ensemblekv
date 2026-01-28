@@ -487,15 +487,20 @@ func (p *MegaPool) flush() error {
 func (p *MegaPool) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+	keys := p.keys()
+
 	processed := make(map[string]bool)
-	err := p.iterate(p.header.BtreeRoot, func(key, val []byte) error {
+	for _, key := range keys {
+		val, err := p.Get(key)
+		if err != nil {
+			return nil, err
+		}
 		if err := f(key, val); err != nil {
-			return err
+			return nil, err
 		}
 		processed[string(key)] = true
-		return nil
-	})
-	return processed, err
+	}
+	return processed, nil
 }
 
 // MapPrefixFunc applies a function to key-value pairs with a prefix.
@@ -503,22 +508,30 @@ func (p *MegaPool) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (m
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	processed := make(map[string]bool)
-	err := p.iterate(p.header.BtreeRoot, func(key, val []byte) error {
+	keys := p.keys()
+	for _, key := range keys {
 		if bytes.HasPrefix(key, prefix) {
+			val, err := p.Get(key)
+			if err != nil {
+				return nil, err
+			}
 			if err := f(key, val); err != nil {
-				return err
+				return nil, err
 			}
 			processed[string(key)] = true
 		}
-		return nil
-	})
-	return processed, err
+	}
+	return processed, nil
 }
 
 // Keys returns all keys in the store.
 func (p *MegaPool) Keys() [][]byte {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+	return p.keys()
+}
+
+func (p *MegaPool) keys() [][]byte {
 	var keys [][]byte
 	p.iterate(p.header.BtreeRoot, func(key, val []byte) error {
 		// Need to copy key because the slice points to mmap
