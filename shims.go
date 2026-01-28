@@ -337,7 +337,10 @@ func (s *BoltDbShim) Keys() [][]byte {
 		b := tx.Bucket([]byte("Blocks"))
 		c := b.Cursor()
 		for k, _ := c.First(); k != nil; k, _ = c.Next() {
-			keys = append(keys, k)
+			// Copy the key since k is valid only for the life of the transaction
+			keyCopy := make([]byte, len(k))
+			copy(keyCopy, k)
+			keys = append(keys, keyCopy)
 		}
 		return nil
 	})
