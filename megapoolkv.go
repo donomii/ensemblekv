@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"strconv"
+	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -42,6 +43,7 @@ type MegaNode struct {
 
 // MegaPool is the main structure for the KV store.
 type MegaPool struct {
+	mu     sync.RWMutex
 	file   *os.File
 	data   []byte // mmapped data
 	header *MegaHeader
@@ -141,6 +143,12 @@ func (p *MegaPool) Close() error {
 
 // Alloc reserves space in the pool and returns the offset.
 func (p *MegaPool) Alloc(size int64) (int64, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.alloc(size)
+}
+
+func (p *MegaPool) alloc(size int64) (int64, error) {
 	if size <= 0 {
 		msg := fmt.Sprintf("invalid allocation size: %d", size)
 		panic(msg)
@@ -216,11 +224,17 @@ func (p *MegaPool) resize(newSize int64) error {
 
 // InsertData allocates space and copies data into it.
 func (p *MegaPool) InsertData(data []byte) (int64, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.insertData(data)
+}
+
+func (p *MegaPool) insertData(data []byte) (int64, error) {
 	if len(data) == 0 {
 		panic("zero length data not allowed")
 	}
 	l := int64(len(data))
-	offset, err := p.Alloc(l)
+	offset, err := p.alloc(l)
 	if err != nil {
 		return 0, err
 	}
@@ -261,14 +275,17 @@ func (p *MegaPool) readBytes(offset, length int64) []byte {
 
 // Put adds or updates a key-value pair.
 func (p *MegaPool) Put(key, value []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	// Implement "write data first" policy
-	keyOffset, err := p.InsertData(key)
+	keyOffset, err := p.insertData(key)
 	if err != nil {
 		return err
 	}
 	valOffset := int64(-1)
 	if len(value) > 0 {
-		valOffset, err = p.InsertData(value)
+		valOffset, err = p.insertData(value)
 		if err != nil {
 			return err
 		}
@@ -339,7 +356,7 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 	if nodeOffset < 1 {
 		// New Node
 		nodeSize := int64(unsafe.Sizeof(MegaNode{}))
-		newOffset, err := p.Alloc(nodeSize)
+		newOffset, err := p.alloc(nodeSize)
 		if err != nil {
 			return 0, err
 		}
@@ -392,6 +409,8 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 
 // Get retrieves a value by key.
 func (p *MegaPool) Get(key []byte) ([]byte, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	nodeOffset := p.search(p.header.BtreeRoot, key)
 	if nodeOffset == 0 {
 		return nil, os.ErrNotExist // Not found
@@ -429,16 +448,22 @@ func (p *MegaPool) search(nodeOffset int64, key []byte) int64 {
 
 // Exists checks if a key exists in the store.
 func (p *MegaPool) Exists(key []byte) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return p.search(p.header.BtreeRoot, key) != 0
 }
 
 // Size returns the total size of the pool file.
 func (p *MegaPool) Size() int64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return p.header.Size
 }
 
 // Flush syncs the mmapped data to disk.
 func (p *MegaPool) Flush() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.data == nil {
 		return errors.New("pool is closed")
 	}
@@ -453,6 +478,8 @@ func (p *MegaPool) Flush() error {
 
 // MapFunc applies a function to all key-value pairs.
 func (p *MegaPool) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	processed := make(map[string]bool)
 	err := p.iterate(p.header.BtreeRoot, func(key, val []byte) error {
 		if err := f(key, val); err != nil {
@@ -466,6 +493,8 @@ func (p *MegaPool) MapFunc(f func([]byte, []byte) error) (map[string]bool, error
 
 // MapPrefixFunc applies a function to key-value pairs with a prefix.
 func (p *MegaPool) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	processed := make(map[string]bool)
 	err := p.iterate(p.header.BtreeRoot, func(key, val []byte) error {
 		if bytes.HasPrefix(key, prefix) {
@@ -481,6 +510,8 @@ func (p *MegaPool) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (m
 
 // Keys returns all keys in the store.
 func (p *MegaPool) Keys() [][]byte {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	var keys [][]byte
 	p.iterate(p.header.BtreeRoot, func(key, val []byte) error {
 		// Need to copy key because the slice points to mmap
@@ -506,6 +537,8 @@ func (p *MegaPool) KeyHistory(key []byte) ([][]byte, error) {
 
 // DumpIndex prints the tree structure to stdout (for debugging).
 func (p *MegaPool) DumpIndex() error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	fmt.Println("MegaPool Index Dump:")
 	return p.iterate(p.header.BtreeRoot, func(key, val []byte) error {
 		fmt.Printf("Key: %s, ValueLen: %d\n", string(key), len(val))
@@ -545,6 +578,8 @@ func (p *MegaPool) iterate(nodeOffset int64, f func([]byte, []byte) error) error
 
 // Delete removes a key and its value from the store.
 func (p *MegaPool) Delete(key []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	root, err := p.deleteNode(p.header.BtreeRoot, key)
 	if err != nil {
 		return err
