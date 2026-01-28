@@ -140,7 +140,6 @@ func (p *MegaPool) Close() error {
 }
 
 // Alloc reserves space in the pool and returns the offset.
-// It DOES NOT handle resizing yet.
 func (p *MegaPool) Alloc(size int64) (int64, error) {
 	if size <= 0 {
 		msg := fmt.Sprintf("invalid allocation size: %d", size)
@@ -148,6 +147,12 @@ func (p *MegaPool) Alloc(size int64) (int64, error) {
 	}
 
 	start := p.header.StartFree
+	if start < int64(unsafe.Sizeof(MegaPool{})) {
+		panic("free space start corrupted, freespace starts at " + strconv.FormatInt(start, 10))
+	}
+	if start > p.header.Size {
+		panic("free space start corrupted, freespace starts at " + strconv.FormatInt(start, 10))
+	}
 	neededFileSize := start + size
 
 	// Check for overflow and resize if needed
@@ -331,7 +336,7 @@ func (p *MegaPool) enforceBounds(nodeOffset int64) error {
 
 // insert recursive function
 func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, valLen int64) (int64, error) {
-	if nodeOffset == 0 {
+	if nodeOffset < 1 {
 		// New Node
 		nodeSize := int64(unsafe.Sizeof(MegaNode{}))
 		newOffset, err := p.Alloc(nodeSize)
