@@ -141,29 +141,24 @@ func (s *SQLiteKV) getRows(query string, args ...any) (*sql.Rows, error) {
 }
 
 func (s *SQLiteKV) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
-
-	rows, err := s.getRows(`SELECT key, value FROM kv_store`)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite map query: %w", err)
-	}
-	defer rows.Close()
+	// Get keys first to separate iteration from modification
+	keys := s.Keys() // Keys() handles its own locking
 
 	visited := make(map[string]bool)
 
-	for rows.Next() {
-		var k string
-		var v []byte
-		if err := rows.Scan(&k, &v); err != nil {
-			return nil, fmt.Errorf("sqlite map scan: %w", err)
+	for _, key := range keys {
+		val, err := s.Get(key)
+		if err != nil {
+			// Key might have been deleted concurrently
+			continue
 		}
-		if err := f([]byte(k), v); err != nil {
+
+		visited[string(key)] = true
+
+		// Call user function without holding DB lock/rows open
+		if err := f(key, val); err != nil {
 			return visited, err
 		}
-		visited[k] = true
-	}
-
-	if err := rows.Err(); err != nil {
-		return visited, fmt.Errorf("sqlite map rows: %w", err)
 	}
 
 	return visited, nil
@@ -266,7 +261,10 @@ func (s *SQLiteKV) withTx(fn func(*sql.Tx) error) error {
 func (s *SQLiteKV) Keys() [][]byte {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.keys()
+}
 
+func (s *SQLiteKV) keys() [][]byte {
 	var keys [][]byte
 	rows, err := s.db.Query(`SELECT key FROM kv_store`)
 	if err != nil {
