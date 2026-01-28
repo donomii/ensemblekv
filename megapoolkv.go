@@ -126,7 +126,10 @@ func OpenMegaPool(path string, size int64) (*MegaPool, error) {
 }
 
 func (p *MegaPool) Close() error {
-	if err := p.Flush(); err != nil {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if err := p.flush(); err != nil {
 		return err
 	}
 	if p.data != nil {
@@ -188,7 +191,7 @@ func (p *MegaPool) alloc(size int64) (int64, error) {
 func (p *MegaPool) resize(newSize int64) error {
 	// Sync current data before unmapping
 	// (Optional but good for safety)
-	p.Flush()
+	p.flush()
 
 	// Check that the new size is greater than the current file size
 	if newSize <= p.header.Size {
@@ -217,7 +220,7 @@ func (p *MegaPool) resize(newSize int64) error {
 	p.data = data
 	p.header = (*MegaHeader)(unsafe.Pointer(&p.data[0]))
 	p.header.Size = newSize // Update size in header
-	p.Flush()               //Make sure all these changes are safely written to disk
+	p.flush()               //Make sure all these changes are safely written to disk
 
 	return nil
 }
@@ -464,6 +467,10 @@ func (p *MegaPool) Size() int64 {
 func (p *MegaPool) Flush() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.flush()
+}
+
+func (p *MegaPool) flush() error {
 	if p.data == nil {
 		return errors.New("pool is closed")
 	}
