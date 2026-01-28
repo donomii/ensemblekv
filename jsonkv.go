@@ -155,13 +155,12 @@ func (s *JsonKV) Close() error {
 
 // MapFunc applies a function to all key-value pairs
 func (s *JsonKV) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
+	keys := s.Keys()
 
 	visited := make(map[string]bool)
-	for k, v := range s.data {
-		visited[k] = true
-		if err := f([]byte(k), v); err != nil {
+	for _, k := range keys {
+		visited[string(k)] = true
+		if err := f(k, s.data[string(k)]); err != nil {
 			return visited, err
 		}
 	}
@@ -169,16 +168,16 @@ func (s *JsonKV) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) 
 }
 
 func (s *JsonKV) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
+	searchKeys := s.Keys()
 
 	keys := make(map[string]bool)
 	prefixStr := string(prefix)
 
-	for k, v := range s.data {
+	for _, kb := range searchKeys {
+		k := string(kb)
 		if strings.HasPrefix(k, prefixStr) {
 			keys[k] = true
-			if err := f([]byte(k), v); err != nil {
+			if err := f([]byte(k), s.data[string(k)]); err != nil {
 				return keys, err
 			}
 		}

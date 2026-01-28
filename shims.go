@@ -333,7 +333,14 @@ func (s *BoltDbShim) KeyHistory(key []byte) ([][]byte, error) {
 
 func (s *BoltDbShim) Keys() [][]byte {
 	var keys [][]byte
-	panic("not implemented")
+	s.boltHandle.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("Blocks"))
+		c := b.Cursor()
+		for k, _ := c.First(); k != nil; k, _ = c.Next() {
+			keys = append(keys, k)
+		}
+		return nil
+	})
 	return keys
 }
 
@@ -408,20 +415,23 @@ func (s *BoltDbShim) Close() error {
 }
 
 func (s *BoltDbShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
-	keys := make(map[string]bool)
-	s.boltHandle.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("Blocks"))
-		c := b.Cursor()
-		for k, v := c.First(); k != nil; k, v = c.Next() {
-			keys[string(k)] = true
-			err := f(k, v)
-			if err != nil {
-				return err
-			}
+	seenKeys := make(map[string]bool)
+	keys := s.Keys()
+
+	for _, k := range keys {
+		var v []byte
+		s.boltHandle.View(func(tx *bolt.Tx) error {
+			b := tx.Bucket([]byte("Blocks"))
+			v = b.Get(k)
+			return nil
+		})
+		seenKeys[string(k)] = true
+		err := f(k, v)
+		if err != nil {
+			return seenKeys, err
 		}
-		return nil
-	})
-	return keys, nil
+	}
+	return seenKeys, nil
 }
 
 func (s *BoltDbShim) List() ([]string, error) {
@@ -451,20 +461,27 @@ func (s *BoltDbShim) Size() int64 {
 }
 
 func (s *BoltDbShim) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
-	keys := make(map[string]bool)
-	err := s.boltHandle.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("Blocks"))
-		c := b.Cursor()
-		// Use BoltDB's native prefix search
-		for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
-			keys[string(k)] = true
-			if err := f(k, v); err != nil {
-				return err
-			}
+	seenKeys := make(map[string]bool)
+	keys := s.Keys()
+
+	for _, k := range keys {
+		if !bytes.HasPrefix(k, prefix) {
+			continue
 		}
-		return nil
-	})
-	return keys, err
+		var v []byte
+		s.boltHandle.View(func(tx *bolt.Tx) error {
+			b := tx.Bucket([]byte("Blocks"))
+			v = b.Get(k)
+			return nil
+		})
+		seenKeys[string(k)] = true
+		err := f(k, v)
+		if err != nil {
+			return seenKeys, err
+		}
+	}
+
+	return seenKeys, nil
 }
 
 type PudgeShim struct {

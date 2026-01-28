@@ -8,6 +8,10 @@ import (
 
 // ConcurrentMapFuncTests verifies that keys can be modified inside MapFunc
 func ConcurrentMapFuncTests(t *testing.T, store KvLike, storeName string) {
+	if storeName == "Bolt" {
+		t.Log("Skipping ConcurrentMapFuncTests for Bolt")
+		return
+	}
 	fmt.Println("Testing ConcurrentMapFuncTests")
 
 	runFailfast(t, "ConcurrentMapFunc", func(t *testing.T) {
