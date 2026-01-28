@@ -143,7 +143,8 @@ func (p *MegaPool) Close() error {
 // It DOES NOT handle resizing yet.
 func (p *MegaPool) Alloc(size int64) (int64, error) {
 	if size <= 0 {
-		return 0, errors.New("invalid allocation size")
+		msg := fmt.Sprintf("invalid allocation size: %d", size)
+		panic(msg)
 	}
 
 	start := p.header.StartFree
@@ -199,6 +200,9 @@ func (p *MegaPool) resize(newSize int64) error {
 
 // InsertData allocates space and copies data into it.
 func (p *MegaPool) InsertData(data []byte) (int64, error) {
+	if len(data) == 0 {
+		panic("zero length data not allowed")
+	}
 	l := int64(len(data))
 	offset, err := p.Alloc(l)
 	if err != nil {
@@ -237,9 +241,12 @@ func (p *MegaPool) Put(key, value []byte) error {
 	if err != nil {
 		return err
 	}
-	valOffset, err := p.InsertData(value)
-	if err != nil {
-		return err
+	valOffset := int64(-1)
+	if len(value) > 0 {
+		valOffset, err = p.InsertData(value)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Insert into tree

@@ -241,6 +241,29 @@ func KVStoreOperations(t *testing.T, store KvLike, storeName string) {
 		}
 	})
 
+	runFailfast(t, "Basic Put and Get Empty", func(t *testing.T) {
+		key := []byte("test_key")
+		value := []byte("")
+
+		//fmt.Printf("Putting key %v\n", trimTo40(key))
+		err := store.Put(key, value)
+		if err != nil {
+			store.DumpIndex()
+			fatalf(t, "store=%s action=PutError key=%s value=%s err=%v", storeName, trimTo40(key), trimTo40(value), err)
+		}
+
+		//fmt.Printf("Getting key %v\n", trimTo40(key))
+		retrieved, err := store.Get(key)
+		if err != nil {
+			store.DumpIndex()
+			fatalf(t, "store=%s action=GetError key=%s err=%v", storeName, trimTo40(key), err)
+		}
+
+		if !bytes.Equal(retrieved, value) {
+			fatalf(t, "store=%s action=GetMismatch key=%s expected=%s got=%s", storeName, trimTo40(key), trimTo40(value), trimTo40(retrieved))
+		}
+	})
+
 	runFailfast(t, "Large Key-Value Pairs", func(t *testing.T) {
 		keySize := limits.maxKeySize / 2
 		valueSize := int(limits.maxValueSize / 2)

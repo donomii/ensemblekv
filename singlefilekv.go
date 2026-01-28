@@ -316,7 +316,11 @@ func (lsm *SingleFileLSM) replayWAL() error {
 		if entry.valLen == tombstoneMarker {
 			lsm.memTable[string(entry.key)] = nil
 		} else {
-			lsm.memTable[string(entry.key)] = entry.value
+			if entry.value == nil {
+				lsm.memTable[string(entry.key)] = []byte{}
+			} else {
+				lsm.memTable[string(entry.key)] = entry.value
+			}
 			lsm.memTableSize += int64(len(entry.key) + len(entry.value))
 		}
 
@@ -412,6 +416,9 @@ func (lsm *SingleFileLSM) Get(key []byte) ([]byte, error) {
 	if val, exists := lsm.memTable[string(key)]; exists {
 		if val == nil {
 			return nil, fmt.Errorf("key deleted")
+		}
+		if len(val) == 0 {
+			return []byte{}, nil
 		}
 		return append([]byte(nil), val...), nil
 	}
@@ -519,7 +526,11 @@ func (lsm *SingleFileLSM) Put(key []byte, value []byte) error {
 	}
 
 	// Add to memtable
-	lsm.memTable[string(key)] = append([]byte(nil), value...)
+	var memVal []byte
+	if value != nil {
+		memVal = append([]byte{}, value...)
+	}
+	lsm.memTable[string(key)] = memVal
 	lsm.memTableSize += int64(len(key) + len(value))
 
 	// Flush if memtable is too large
