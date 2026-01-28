@@ -156,7 +156,7 @@ func (p *MegaPool) Alloc(size int64) (int64, error) {
 	neededFileSize := start + size
 
 	// Check for overflow and resize if needed
-	if neededFileSize > p.header.Size {
+	if neededFileSize >= p.header.Size {
 		// Calculate new size (at least double, or fit the new allocation)
 		extendSize := size * 2
 		if extendSize < 1024*1024 {
@@ -372,13 +372,13 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 		if err != nil {
 			return 0, err
 		}
-		node.Left = left
+		p.nodeAt(nodeOffset).Left = left
 	} else if cmp > 0 {
 		right, err := p.insert(node.Right, key, keyOff, valOff, keyLen, valLen)
 		if err != nil {
 			return 0, err
 		}
-		node.Right = right
+		p.nodeAt(nodeOffset).Right = right
 	} else {
 		// Update existing node
 		// "Update pointers last" - we update the DataOffset/Len
