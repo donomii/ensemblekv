@@ -26,10 +26,6 @@ func ExtentCreator(directory string, blockSize, fileSize int64) (KvLike, error) 
 	return NewExtentKeyValueStore(directory, blockSize, fileSize)
 }
 
-func ExtentMmapCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
-	return NewExtentMmapKeyValueStore(directory, blockSize, fileSize)
-}
-
 func SingleFileKVCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
 	// Ensure directory exists
 	if err := os.MkdirAll(directory, 0755); err != nil {
@@ -89,12 +85,7 @@ func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize, substores,
 		}
 
 		return h
-	case "extentmmap":
-		h, err := NewExtentMmapKeyValueStore(location, blockSize, filesize)
-		if err != nil {
-			panic(err)
-		}
-		return h
+
 	case "sqlite":
 		h, err := NewSQLiteKVStore(location, blockSize, filesize)
 		if err != nil {
@@ -135,8 +126,7 @@ func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize, substores,
 			creator = NuDbCreator
 		case "extent":
 			creator = ExtentCreator
-		case "extentmmap":
-			creator = ExtentMmapCreator
+
 		case "sqlite":
 			creator = SQLiteCreator
 		case "bolt":

@@ -126,8 +126,7 @@ func openStore(storeType, baseType, storeDir string) (ensemblekv.KvLike, error) 
 	switch strings.ToLower(baseType) {
 	case "extent":
 		baseCreator = ensemblekv.ExtentCreator
-	case "extentmmap":
-		baseCreator = ensemblekv.ExtentMmapCreator
+
 	case "bolt":
 		baseCreator = ensemblekv.BoltDbCreator
 	case "json":
@@ -144,8 +143,7 @@ func openStore(storeType, baseType, storeDir string) (ensemblekv.KvLike, error) 
 	switch strings.ToLower(storeType) {
 	case "extent":
 		return ensemblekv.ExtentCreator(storeDir, blockSize, fileSize)
-	case "extentmmap":
-		return ensemblekv.ExtentMmapCreator(storeDir, blockSize, fileSize)
+
 	case "bolt":
 		return ensemblekv.BoltDbCreator(storeDir, blockSize, fileSize)
 	case "json":

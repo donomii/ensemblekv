@@ -68,7 +68,7 @@ var testFileCapacity int64 = 12000000000 // 100MB
 var StoreCreators = []StoreCreator{
 	{"BoltDB", BoltDbCreator},
 	{"ExtentKV", ExtentCreator},
-	{"ExtentMmapKV", ExtentMmapCreator},
+
 	{"MmapSingle", MmapSingleCreator},
 	{"SQLiteKV", SQLiteCreator},
 	StoreCreator{"SingleFileKV", SingleFileKVCreator},
@@ -90,9 +90,7 @@ var StoreCreators = []StoreCreator{
 	{"EnsembleExtent", func(d string, b, c int64) (KvLike, error) {
 		return EnsembleCreator(d, b, testFileCapacity, ExtentCreator)
 	}},
-	{"EnsembleExtentMmap", func(d string, b, c int64) (KvLike, error) {
-		return EnsembleCreator(d, b, testFileCapacity, ExtentMmapCreator)
-	}},
+
 	{"EnsembleMmapSingle", func(d string, b, c int64) (KvLike, error) {
 		return EnsembleCreator(d, b, testFileCapacity, MmapSingleCreator)
 	}},
@@ -122,7 +120,7 @@ var StoreCreators = []StoreCreator{
 	}},
 	{"StarLSMSQLite", func(d string, b, c int64) (KvLike, error) {
 		return NewStarLSM(d, b, testFileCapacity, SQLiteCreator)
-	}},*/	
+	}},*/
 }
 
 // BenchmarkResult holds the results of a benchmark run

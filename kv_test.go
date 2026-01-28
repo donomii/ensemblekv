@@ -326,7 +326,7 @@ var baseStores = []struct {
 }{
 	{"Bolt", BoltDbCreator},
 	{"Extent", ExtentCreator},
-	{"ExtentMmap", ExtentMmapCreator},
+
 	// {"Pudge", PudgeCreator},
 	{"JsonKV", JsonKVCreator},
 	{"SingleFileLSM", SingleFileKVCreator},
