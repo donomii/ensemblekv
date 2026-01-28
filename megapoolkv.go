@@ -177,6 +177,11 @@ func (p *MegaPool) resize(newSize int64) error {
 	// (Optional but good for safety)
 	p.Flush()
 
+	// Check that the new size is greater than the current file size
+	if newSize <= p.header.Size {
+		panic("New size(" + strconv.FormatInt(newSize, 10) + ") is less than or equal to current size(" + strconv.FormatInt(p.header.Size, 10) + ")")
+	}
+
 	// 1. Unmap current data
 	if err := unix.Munmap(p.data); err != nil {
 		panic("Failed to unmap data file:" + p.path + ": " + err.Error())
@@ -185,10 +190,7 @@ func (p *MegaPool) resize(newSize int64) error {
 	p.header = nil // Invalidated
 
 	// 2. Truncate file to new size
-	// Check that the new size is greater than the current size
-	if newSize <= p.header.Size {
-		panic("New size(" + strconv.FormatInt(newSize, 10) + ") is less than or equal to current size(" + strconv.FormatInt(p.header.Size, 10) + ")")
-	}
+
 	if err := p.file.Truncate(newSize); err != nil {
 		panic("Failed to truncate file:" + p.path + " to size:" + strconv.FormatInt(newSize, 10) + ": " + err.Error())
 	}
