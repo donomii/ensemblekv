@@ -331,6 +331,7 @@ var baseStores = []struct {
 	{"SingleFileLSM", SingleFileKVCreator},
 	{"SQLite", SQLiteCreator},
 	{"MmapSingle", MmapSingleCreator},
+	{"Megapool", MegapoolCreator},
 }
 
 // Store wrapper types

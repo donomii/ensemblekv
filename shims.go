@@ -54,6 +54,13 @@ func BoltDbCreator(directory string, blockSize, fileSize int64) (KvLike, error) 
 	return NewBoltDbShim(directory, blockSize, fileSize)
 }
 
+func MegapoolCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
+	if err := os.MkdirAll(directory, 0755); err != nil {
+		return nil, err
+	}
+	return OpenMegaPool(filepath.Join(directory, "megapool.db"), fileSize)
+}
+
 func EnsembleCreator(directory string, blockSize, filesize int64, creator CreatorFunc) (KvLike, error) {
 	N := int64(3)          //Number of sub-stores
 	maxKeys := int64(1000) //Max number of keys in each sub-store, before it is split
@@ -112,6 +119,12 @@ func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize, substores,
 			panic(err)
 		}
 		return h
+	case "megapool":
+		h, err := OpenMegaPool(filepath.Join(location, "megapool.db"), filesize)
+		if err != nil {
+			panic(err)
+		}
+		return h
 
 	case "ensemble":
 		var creator CreatorFunc
@@ -130,6 +143,8 @@ func SimpleEnsembleCreator(tipe, subtipe, location string, blockSize, substores,
 			creator = BoltDbCreator
 		case "mmapsingle":
 			creator = MmapSingleCreator
+		case "megapool":
+			creator = MegapoolCreator
 		default:
 			panic("Unknown substore type: " + subtipe)
 		}
