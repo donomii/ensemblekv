@@ -252,6 +252,7 @@ func (p *MegaPool) insertData(data []byte) (int64, error) {
 
 // Helper to get a pointer to a node at a given offset
 func (p *MegaPool) nodeAt(offset int64) *MegaNode {
+	// fmt.Printf("nodeAt %d\n", offset)
 	if offset <= 0 || offset >= int64(len(p.data)) {
 		return nil
 	}
@@ -274,6 +275,7 @@ func (p *MegaPool) nodeAt(offset int64) *MegaNode {
 
 // Helper to read byte slice from offset
 func (p *MegaPool) readBytes(offset, length int64) []byte {
+	// fmt.Printf("readBytes %d %d\n", offset, length)
 	if offset <= 0 || length <= 0 || offset+length > int64(len(p.data)) {
 		return nil
 	}
@@ -316,6 +318,8 @@ func (p *MegaPool) Put(key, value []byte) error {
 }
 
 func (p *MegaPool) enforceBounds(nodeOffset int64) error {
+	fmt.Printf("enforceBounds %d\n", nodeOffset)
+	defer fmt.Printf("enforceBounds %d DONE\n", nodeOffset)
 	node := p.nodeAt(nodeOffset)
 	if node == nil {
 		return nil
@@ -477,6 +481,8 @@ func (p *MegaPool) get(key []byte) ([]byte, error) {
 }
 
 func (p *MegaPool) search(nodeOffset int64, key []byte, depth int) int64 {
+	fmt.Printf("search %d depth %d\n", nodeOffset, depth)
+	defer fmt.Printf("search %d depth %d DONE\n", nodeOffset, depth)
 	if depth > MaxDepth {
 		panic("MegaPool cycle detected or tree too deep")
 	}
