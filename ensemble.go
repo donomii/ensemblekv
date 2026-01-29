@@ -277,7 +277,6 @@ func (s *EnsembleKv) Delete(key []byte) error {
 
 // Exists checks if a key exists in the appropriate substore.
 func (s *EnsembleKv) Exists(key []byte) bool {
-	fmt.Printf("Ensemble(%p).Exists: lock-free\n", s)
 	if !s.running.Load() {
 		return false
 	}

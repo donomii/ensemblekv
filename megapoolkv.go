@@ -55,6 +55,7 @@ type MegaPool struct {
 	data   []byte // mmapped data
 	header *MegaHeader
 	path   string
+	Debug  bool
 }
 
 // OpenMegaPool opens or creates a MegaPool file.
@@ -132,10 +133,41 @@ func OpenMegaPool(path string, size int64) (*MegaPool, error) {
 	return pool, nil
 }
 
-func (p *MegaPool) Close() error {
-	fmt.Printf("MegaPool(%p).Close: locking\n", p)
+func (p *MegaPool) lock(name string) {
+	if p.Debug {
+		fmt.Printf("MegaPool(%p).%s: locking\n", p, name)
+	}
 	p.mu.Lock()
-	defer func() { fmt.Printf("MegaPool(%p).Close: unlocking\n", p); p.mu.Unlock() }()
+}
+
+func (p *MegaPool) unlock(name string) {
+	if p.Debug {
+		fmt.Printf("MegaPool(%p).%s: unlocking\n", p, name)
+	}
+	p.mu.Unlock()
+}
+
+func (p *MegaPool) rlock(name string) {
+	if p.Debug {
+		fmt.Printf("MegaPool(%p).%s: rlocking\n", p, name)
+	}
+	p.mu.RLock()
+}
+
+func (p *MegaPool) runlock(name string) {
+	if p.Debug {
+		fmt.Printf("MegaPool(%p).%s: runlocking\n", p, name)
+	}
+	p.mu.RUnlock()
+}
+
+func (p *MegaPool) Close() error {
+	p.lock("Close")
+	defer p.unlock("Close")
+
+	if p.data == nil {
+		return nil
+	}
 
 	if err := p.flush(); err != nil {
 		panicWithStack(err)
@@ -156,9 +188,8 @@ func (p *MegaPool) Close() error {
 
 // Alloc reserves space in the pool and returns the offset.
 func (p *MegaPool) Alloc(size int64) (int64, error) {
-	fmt.Printf("MegaPool(%p).Alloc: locking\n", p)
-	p.mu.Lock()
-	defer func() { fmt.Printf("MegaPool(%p).Alloc: unlocking\n", p); p.mu.Unlock() }()
+	p.lock("Alloc")
+	defer p.unlock("Alloc")
 	return p.alloc(size)
 }
 
@@ -245,9 +276,8 @@ func (p *MegaPool) resize(newSize int64) error {
 
 // InsertData allocates space and copies data into it.
 func (p *MegaPool) InsertData(data []byte) (int64, error) {
-	fmt.Printf("MegaPool(%p).InsertData: locking\n", p)
-	p.mu.Lock()
-	defer func() { fmt.Printf("MegaPool(%p).InsertData: unlocking\n", p); p.mu.Unlock() }()
+	p.lock("InsertData")
+	defer p.unlock("InsertData")
 	return p.insertData(data)
 }
 
@@ -309,6 +339,9 @@ func (p *MegaPool) nodeAt(offset int64) *MegaNode {
 // Helper to read byte slice from offset
 func (p *MegaPool) readBytes(offset, length int64) []byte {
 	//fmt.Printf("readBytes %d %d\n", offset, length)
+	if length == 0 {
+		return nil
+	}
 	if offset <= 0 {
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
 		fmt.Print(msg)
@@ -368,9 +401,8 @@ func (p *MegaPool) copyNode(offset int64) (int64, error) {
 // Put adds or updates a key-value pair.
 // Put adds or updates a key-value pair.
 func (p *MegaPool) Put(key, value []byte) error {
-	fmt.Printf("MegaPool(%p).Put: locking\n", p)
-	p.mu.Lock()
-	defer func() { fmt.Printf("MegaPool(%p).Put: unlocking\n", p); p.mu.Unlock() }()
+	p.lock("Put")
+	defer p.unlock("Put")
 	var err error
 
 	startSync := p.header.StartFree
@@ -451,12 +483,12 @@ func (p *MegaPool) enforceBounds(nodeOffset int64) error {
 		return fmt.Errorf("corrupted tree: data of node at %d is invalid(%v greater than file size %v)", nodeOffset, node.DataOffset+node.DataLen, p.header.Size)
 	}
 
-	if node.KeyOffset < 0 {
+	if node.KeyOffset < 0 && node.KeyLen > 0 {
 		fmt.Printf("corrupted tree: key of node at %d is invalid(%v less than 0)\n", nodeOffset, node.KeyOffset)
 
 		return fmt.Errorf("corrupted tree: key of node at %d is invalid(%v less than 0)", nodeOffset, node.KeyOffset)
 	}
-	if node.DataOffset < 0 {
+	if node.DataOffset < 0 && node.DataLen > 0 {
 		fmt.Printf("corrupted tree: data of node at %d is invalid(%v less than 0)\n", nodeOffset, node.DataOffset)
 
 		return fmt.Errorf("corrupted tree: data of node at %d is invalid(%v less than 0)", nodeOffset, node.DataOffset)
@@ -583,9 +615,8 @@ func (p *MegaPool) rotateLeft(rootOffset int64) int64 {
 
 // Get retrieves a value by key.
 func (p *MegaPool) Get(key []byte) ([]byte, error) {
-	fmt.Printf("MegaPool(%p).Get: rlocking\n", p)
-	p.mu.RLock()
-	defer func() { fmt.Printf("MegaPool(%p).Get: runlocking\n", p); p.mu.RUnlock() }()
+	p.rlock("Get")
+	defer p.runlock("Get")
 	return p.get(key)
 }
 
@@ -640,25 +671,22 @@ func (p *MegaPool) search(nodeOffset int64, key []byte, depth int) int64 {
 
 // Exists checks if a key exists in the store.
 func (p *MegaPool) Exists(key []byte) bool {
-	fmt.Printf("MegaPool(%p).Exists: rlocking\n", p)
-	p.mu.RLock()
-	defer func() { fmt.Printf("MegaPool(%p).Exists: runlocking\n", p); p.mu.RUnlock() }()
+	p.rlock("Exists")
+	defer p.runlock("Exists")
 	return p.search(p.header.BtreeRoot, key, 0) != 0
 }
 
 // Size returns the total size of the pool file.
 func (p *MegaPool) Size() int64 {
-	fmt.Printf("MegaPool(%p).Size: rlocking\n", p)
-	p.mu.RLock()
-	defer func() { fmt.Printf("MegaPool(%p).Size: runlocking\n", p); p.mu.RUnlock() }()
+	p.rlock("Size")
+	defer p.runlock("Size")
 	return p.header.Size
 }
 
 // Flush syncs the mmapped data to disk.
 func (p *MegaPool) Flush() error {
-	fmt.Printf("MegaPool(%p).Flush: locking\n", p)
-	p.mu.Lock()
-	defer func() { fmt.Printf("MegaPool(%p).Flush: unlocking\n", p); p.mu.Unlock() }()
+	p.lock("Flush")
+	defer p.unlock("Flush")
 	return p.flush()
 }
 
@@ -718,9 +746,8 @@ func (p *MegaPool) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (m
 
 // Keys returns all keys in the store.
 func (p *MegaPool) Keys() [][]byte {
-	fmt.Printf("MegaPool(%p).Keys: rlocking\n", p)
-	p.mu.RLock()
-	defer func() { fmt.Printf("MegaPool(%p).Keys: runlocking\n", p); p.mu.RUnlock() }()
+	p.rlock("Keys")
+	defer p.runlock("Keys")
 	return p.keys()
 }
 
@@ -738,9 +765,8 @@ func (p *MegaPool) keys() [][]byte {
 
 // KeyHistory returns the history of a key. MegaPool only stores current value.
 func (p *MegaPool) KeyHistory(key []byte) ([][]byte, error) {
-	fmt.Printf("MegaPool(%p).KeyHistory: rlocking\n", p)
-	p.mu.RLock()
-	defer func() { fmt.Printf("MegaPool(%p).KeyHistory: runlocking\n", p); p.mu.RUnlock() }()
+	p.rlock("KeyHistory")
+	defer p.runlock("KeyHistory")
 	val, err := p.get(key)
 	if err != nil {
 		return nil, err
@@ -753,9 +779,8 @@ func (p *MegaPool) KeyHistory(key []byte) ([][]byte, error) {
 
 // DumpIndex prints the tree structure to stdout (for debugging).
 func (p *MegaPool) DumpIndex() error {
-	fmt.Printf("MegaPool(%p).DumpIndex: rlocking\n", p)
-	p.mu.RLock()
-	defer func() { fmt.Printf("MegaPool(%p).DumpIndex: runlocking\n", p); p.mu.RUnlock() }()
+	p.rlock("DumpIndex")
+	defer p.runlock("DumpIndex")
 	fmt.Println("MegaPool Index Dump:")
 	return p.iterate(p.header.BtreeRoot, func(key, val []byte) error {
 		fmt.Printf("Key: %s, ValueLen: %d\n", string(key), len(val))
