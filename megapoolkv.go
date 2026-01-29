@@ -160,9 +160,16 @@ func (p *MegaPool) alloc(size int64) (int64, error) {
 		panic(msg)
 	}
 
+	// Align to 8 bytes
+	if p.header.StartFree%8 != 0 {
+		p.header.StartFree += (8 - (p.header.StartFree % 8))
+	}
+
 	start := p.header.StartFree
-	if start < int64(unsafe.Sizeof(MegaPool{})) {
-		panic("free space start corrupted, freespace starts at " + strconv.FormatInt(start, 10))
+	if start < MegaHeaderSize {
+		// If StartFree is corrupted/zero/too small, reset to after header
+		fmt.Printf("MegaPool: StartFree corrupted (%d), resetting to %d\n", start, MegaHeaderSize)
+		start = MegaHeaderSize
 	}
 	if start > p.header.Size {
 		panic("free space start corrupted, freespace starts at " + strconv.FormatInt(start, 10))
@@ -255,18 +262,18 @@ func (p *MegaPool) nodeAt(offset int64) *MegaNode {
 	// fmt.Printf("nodeAt %d\n", offset)
 	if offset <= 0 {
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
-		fmt.Printf(msg)
+		fmt.Print(msg)
 		panic(msg)
 	}
 	if offset >= int64(len(p.data)) {
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d greater than file size %d\n", offset, p.header.Size)
-		fmt.Printf(msg)
+		fmt.Print(msg)
 		panic(msg)
 	}
 	// Check if node fits
 	if offset+int64(unsafe.Sizeof(MegaNode{})) > int64(len(p.data)) {
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d greater than file size %d\n", offset, p.header.Size)
-		fmt.Printf(msg)
+		fmt.Print(msg)
 		panic(msg)
 	}
 	// Unsafe casting to access struct at offset
@@ -275,12 +282,12 @@ func (p *MegaPool) nodeAt(offset int64) *MegaNode {
 	test := node.Left + node.Right + node.KeyOffset + node.DataOffset + node.DataLen + node.Bumper + node.BumperL + node.Bumper
 	if test < 0 { // Golang :(
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
-		fmt.Printf(msg)
+		fmt.Print(msg)
 		panic(msg)
 	}
 	if node.Bumper != ^node.BumperL {
-		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
-		fmt.Printf(msg)
+		msg := fmt.Sprintf("corrupted tree: bumper mismatch at %d\n", offset)
+		fmt.Print(msg)
 		panic(msg)
 	}
 	return node
@@ -291,23 +298,58 @@ func (p *MegaPool) readBytes(offset, length int64) []byte {
 	// fmt.Printf("readBytes %d %d\n", offset, length)
 	if offset <= 0 || length <= 0 || offset+length > int64(len(p.data)) {
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
-		fmt.Printf(msg)
+		fmt.Print(msg)
 		panic(msg)
 	}
 	if length < 1 {
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
-		fmt.Printf(msg)
+		fmt.Print(msg)
 		panic(msg)
 	}
 	return p.data[offset : offset+length]
 }
 
+func (p *MegaPool) flushRange(start, length int64) error {
+	if start < 0 || length <= 0 || start+length > int64(len(p.data)) {
+		return nil
+	}
+	pageSize := int64(os.Getpagesize())
+	alignedStart := (start / pageSize) * pageSize
+	end := start + length
+	return unix.Msync(p.data[alignedStart:end], unix.MS_SYNC)
+}
+
+func (p *MegaPool) copyNode(offset int64) (int64, error) {
+	if offset <= 0 {
+		return 0, nil
+	}
+	nodeSize := int64(unsafe.Sizeof(MegaNode{}))
+	newOffset, err := p.alloc(nodeSize)
+	if err != nil {
+		return 0, err
+	}
+
+	src := p.nodeAt(offset)
+	if src == nil {
+		return 0, fmt.Errorf("copyNode: invalid offset %d", offset)
+	}
+	dst := p.nodeAt(newOffset)
+	// Refetch src in case alloc resized
+	src = p.nodeAt(offset)
+
+	*dst = *src
+	return newOffset, nil
+}
+
+// Put adds or updates a key-value pair.
 // Put adds or updates a key-value pair.
 func (p *MegaPool) Put(key, value []byte) error {
 	fmt.Printf("MegaPool(%p).Put: locking\n", p)
 	p.mu.Lock()
 	defer func() { fmt.Printf("MegaPool(%p).Put: unlocking\n", p); p.mu.Unlock() }()
 	var err error
+
+	startSync := p.header.StartFree
 
 	// Implement "write data first" policy
 	keyOffset := int64(-1)
@@ -325,12 +367,26 @@ func (p *MegaPool) Put(key, value []byte) error {
 		}
 	}
 
-	// Insert into tree
+	// Insert into tree using COW
 	root, err := p.insert(p.header.BtreeRoot, key, keyOffset, valOffset, int64(len(key)), int64(len(value)))
 	if err != nil {
 		return err
 	}
+
+	// Flush new data
+	endSync := p.header.StartFree
+	if endSync > startSync {
+		if err := p.flushRange(startSync, endSync-startSync); err != nil {
+			return err
+		}
+	}
+
 	p.header.BtreeRoot = root
+
+	// Flush header
+	if err := p.flushRange(0, MegaHeaderSize); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -388,6 +444,7 @@ func (p *MegaPool) enforceBounds(nodeOffset int64) error {
 }
 
 // insert recursive function
+// insert recursive function with COW
 func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, valLen int64) (int64, error) {
 	if nodeOffset < 1 {
 		// New Node
@@ -412,9 +469,16 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 	}
 
 	p.enforceBounds(nodeOffset)
-	node := p.nodeAt(nodeOffset)
+
+	// Copy node (COW)
+	myOffset, err := p.copyNode(nodeOffset)
+	if err != nil {
+		return 0, err
+	}
+
+	node := p.nodeAt(myOffset)
 	if node == nil {
-		return 0, errors.New("corrupted tree: invalid node offset " + strconv.FormatInt(nodeOffset, 10))
+		return 0, errors.New("corrupted tree: invalid node at offset " + strconv.FormatInt(myOffset, 10))
 	}
 
 	nodeKey := p.readBytes(node.KeyOffset, node.KeyLen)
@@ -425,30 +489,33 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 		if err != nil {
 			return 0, err
 		}
-		p.nodeAt(nodeOffset).Left = left
+		// Refetch myOffset
+		p.nodeAt(myOffset).Left = left
 		// Balance
-		if p.nodeAt(left).Bumper > p.nodeAt(nodeOffset).Bumper {
-			nodeOffset = p.rotateRight(nodeOffset)
+		if p.nodeAt(left).Bumper > p.nodeAt(myOffset).Bumper {
+			myOffset = p.rotateRight(myOffset)
 		}
 	} else if cmp > 0 {
 		right, err := p.insert(node.Right, key, keyOff, valOff, keyLen, valLen)
 		if err != nil {
 			return 0, err
 		}
-		p.nodeAt(nodeOffset).Right = right
+		// Refetch myOffset
+		p.nodeAt(myOffset).Right = right
 		// Balance
-		if p.nodeAt(right).Bumper > p.nodeAt(nodeOffset).Bumper {
-			nodeOffset = p.rotateLeft(nodeOffset)
+		if p.nodeAt(right).Bumper > p.nodeAt(myOffset).Bumper {
+			myOffset = p.rotateLeft(myOffset)
 		}
 	} else {
-		// Update existing node
-		// "Update pointers last" - we update the DataOffset/Len
-		node.DataOffset = valOff
-		node.DataLen = valLen
-		// Note: We are NOT freeing the old data. This is append-only.
+		// Update existing node (already copied)
+		n := p.nodeAt(myOffset)
+		n.DataOffset = valOff
+		n.DataLen = valLen
+		n.KeyOffset = keyOff
+		n.KeyLen = keyLen
 	}
 
-	return nodeOffset, nil
+	return myOffset, nil
 }
 
 func (p *MegaPool) rotateRight(rootOffset int64) int64 {
@@ -689,15 +756,31 @@ func (p *MegaPool) iterate(nodeOffset int64, f func([]byte, []byte) error) error
 }
 
 // Delete removes a key and its value from the store.
+// Delete removes a key and its value from the store.
 func (p *MegaPool) Delete(key []byte) error {
 	fmt.Printf("MegaPool(%p).Delete: locking\n", p)
 	p.mu.Lock()
 	defer func() { fmt.Printf("MegaPool(%p).Delete: unlocking\n", p); p.mu.Unlock() }()
+
+	startSync := p.header.StartFree
 	root, err := p.deleteNode(p.header.BtreeRoot, key)
 	if err != nil {
 		return err
 	}
+
+	// Flush new data
+	endSync := p.header.StartFree
+	if endSync > startSync {
+		if err := p.flushRange(startSync, endSync-startSync); err != nil {
+			return err
+		}
+	}
+
 	p.header.BtreeRoot = root
+	// Flush header
+	if err := p.flushRange(0, MegaHeaderSize); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -705,10 +788,13 @@ func (p *MegaPool) deleteNode(nodeOffset int64, key []byte) (int64, error) {
 	if nodeOffset == 0 {
 		return 0, nil // Not found, nothing to delete
 	}
-	node := p.nodeAt(nodeOffset)
-	if node == nil {
-		return 0, errors.New("corrupt tree: invalid node offset in delete")
+
+	// Copy node (COW)
+	myOffset, err := p.copyNode(nodeOffset)
+	if err != nil {
+		return 0, err
 	}
+	node := p.nodeAt(myOffset) // Safe
 
 	nodeKey := p.readBytes(node.KeyOffset, node.KeyLen)
 	cmp := bytes.Compare(key, nodeKey)
@@ -718,15 +804,15 @@ func (p *MegaPool) deleteNode(nodeOffset int64, key []byte) (int64, error) {
 		if err != nil {
 			return 0, err
 		}
-		node.Left = left
-		return nodeOffset, nil
+		p.nodeAt(myOffset).Left = left
+		return myOffset, nil
 	} else if cmp > 0 {
 		right, err := p.deleteNode(node.Right, key)
 		if err != nil {
 			return 0, err
 		}
-		node.Right = right
-		return nodeOffset, nil
+		p.nodeAt(myOffset).Right = right
+		return myOffset, nil
 	} else {
 		// Found node to delete
 		// Case 1: No children
