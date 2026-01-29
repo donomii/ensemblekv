@@ -155,6 +155,7 @@ func (s *EnsembleKv) hashToIndex(hash uint64) int {
 }
 
 func (s *EnsembleKv) KeyHistory(key []byte) ([][]byte, error) {
+	fmt.Printf("Ensemble.KeyHistory: locking\n")
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	if !s.running {
@@ -192,6 +193,7 @@ func (s *EnsembleKv) KeyHistory(key []byte) ([][]byte, error) {
 }
 
 func (s *EnsembleKv) Keys() [][]byte {
+	fmt.Printf("Ensemble.Keys: locking\n")
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	if !s.running {
@@ -251,6 +253,7 @@ func (s *EnsembleKv) Put(key []byte, val []byte) error {
 
 // Delete removes a key-value pair from the appropriate substore.
 func (s *EnsembleKv) Delete(key []byte) error {
+	fmt.Printf("Ensemble.Delete: locking\n")
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	if !s.running {
@@ -269,6 +272,7 @@ func (s *EnsembleKv) Delete(key []byte) error {
 
 // Exists checks if a key exists in the appropriate substore.
 func (s *EnsembleKv) Exists(key []byte) bool {
+	fmt.Printf("Ensemble.Exists: locking\n")
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	if !s.running {
@@ -282,6 +286,7 @@ func (s *EnsembleKv) Exists(key []byte) bool {
 
 // Flush calls Flush on all substores.
 func (s *EnsembleKv) Flush() error {
+	fmt.Printf("Ensemble.Flush: locking\n")
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	if !s.running {
@@ -298,6 +303,7 @@ func (s *EnsembleKv) Flush() error {
 
 // Close closes all substores.
 func (s *EnsembleKv) Close() error {
+	fmt.Printf("Ensemble.Close: locking\n")
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.running = false
@@ -381,6 +387,7 @@ func (s *EnsembleKv) MapFunc(f func(key []byte, value []byte) error) (map[string
 
 // Size returns the total number of keys in the store.
 func (s *EnsembleKv) Size() int64 {
+	fmt.Printf("Ensemble.Size: locking\n")
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
