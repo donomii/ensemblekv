@@ -7,6 +7,7 @@ I wanted a key-value store that could hold 10 Tb of data, and I couldn't find an
 
 I didn't want to write my own key-value store, so instead I wrote a small program to open 100 key-value stores, and wrote the data evenly across all of them.
 
+But even that didn't work too well, so I gave up and wrote my own key-value store 
 
 # EnsembleKV: Scalable Multi-Store Key-Value Systems
 
@@ -21,9 +22,15 @@ EnsembleKV is a collection of key-value store implementations designed for handl
 
 ## Available Stores
 
+EnsembleKV is a store manager.  It creates and manages multiple stores, and distributes data across them.  This gives excellent scalability, and good parallelism.
+
+To use EnsembleKV, you need to create a store manager, and also hand it a creator function that will create the underlying stores.  The underlying stores can be any of the stores listed below.  
+
+You can also use these base stores directly, if you don't need the scalability.
+
 ### EnsembleKV
 
-The base ensemble store that uses consistent hashing to distribute data across multiple substores. When substores reach capacity, it automatically doubles the number of substores and redistributes the data.
+The ensemble store uses consistent hashing to distribute data across multiple substores. 
 
 ```go
 // Create a new EnsembleKV store using BoltDB as the backend
@@ -40,17 +47,23 @@ value, err := store.Get([]byte("key"))
 
 Key features:
 - Initial creation with N substores (default 3)
-- Automatic doubling of substores when capacity is reached
 - Even distribution using consistent hashing
-- Good for random access patterns
+- Excellent for random access patterns
+- Highly parallel
 
-## Available Backend Stores
+## Available Substores
 
 The ensemble stores can use any of these backend stores:
 
 - **BoltDB**: Reliable B+tree-based store with ACID guarantees
-- **ExtentKV**: Simple append-only store with good write performance
+- **ExtentKV**: Simple append-only store with good write performance.  Kind to spinning disks.
 - **JsonKV**: Simple JSON-based store for testing and small datasets
+- **MegaPoolKV**: Tree-based append-only store with good crash resistance.  High overhead.
+- **SQLiteKV**:  SQLite-based store, key-value only (no SQL)
+- **NuDB**
+- **PudgeDB**
+
+SQLite and BoltDB are the well known projects, just with a thin compatibility layer.  Both work well, but can't handle large datasets, so they work very well with EnsembleKV.
 
 ## Common Interface
 
@@ -66,6 +79,7 @@ type KvLike interface {
     Flush() error
     Close() error
     MapFunc(f func([]byte, []byte) error) (map[string]bool, error)
+    Keys() [][]byte
 }
 ```
 
@@ -74,15 +88,16 @@ type KvLike interface {
 Each store type accepts these common parameters:
 
 - `directory`: Base directory for the store
-- `blockSize`: Size of storage blocks (typically 4096)
+- `blockSize`: Size of storage blocks (typically 10*1024*1024)
 - `createStore`: Function to create backend stores
+- `fileSize`: Size of the file to create, or max size of the file, depending on the store type.
 
 Additional store-specific parameters:
 
 ### EnsembleKV
 ```go
 type EnsembleKv struct {
-    N           int    // Number of initial substores
+    N           int    // Number of initial substores (can't be changed after creation)
     maxKeys     int    // Maximum keys per substore
     maxBlock    int    // Maximum block size
 }
@@ -94,8 +109,10 @@ type EnsembleKv struct {
 
 1. For general purpose use with good scaling:
 ```go
-store := EnsembleCreator("/path/to/store", 4096, BoltDbCreator)
+store := EnsembleCreator("/path/to/store", 10*1024*1024, ExtentCreator, 10*1024*1024)
 ```
+
+
 
 ## Error Handling
 
@@ -116,6 +133,8 @@ if err != nil {
     }
 }
 ```
+
+The data stores panic on serious errors, to prevent corruption.  You should install recovery blocks around database operations.
 
 ## Contributing
 
