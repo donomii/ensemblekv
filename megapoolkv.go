@@ -127,9 +127,8 @@ func OpenMegaPool(path string, size int64) (*MegaPool, error) {
 }
 
 func (p *MegaPool) Close() error {
-	fmt.Printf("MegaPool(%p).Close: locking\n", p)
 	p.mu.Lock()
-	defer func() { fmt.Printf("MegaPool(%p).Close: unlocking\n", p); p.mu.Unlock() }()
+	defer p.mu.Unlock()
 
 	if err := p.flush(); err != nil {
 		return err
@@ -259,7 +258,6 @@ func (p *MegaPool) insertData(data []byte) (int64, error) {
 
 // Helper to get a pointer to a node at a given offset
 func (p *MegaPool) nodeAt(offset int64) *MegaNode {
-	// fmt.Printf("nodeAt %d\n", offset)
 	if offset <= 0 {
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
 		fmt.Print(msg)
@@ -295,7 +293,6 @@ func (p *MegaPool) nodeAt(offset int64) *MegaNode {
 
 // Helper to read byte slice from offset
 func (p *MegaPool) readBytes(offset, length int64) []byte {
-	// fmt.Printf("readBytes %d %d\n", offset, length)
 	if offset <= 0 || length <= 0 || offset+length > int64(len(p.data)) {
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
 		fmt.Print(msg)
@@ -346,9 +343,8 @@ func (p *MegaPool) copyNode(offset int64) (int64, error) {
 // Put adds or updates a key-value pair.
 // Put adds or updates a key-value pair.
 func (p *MegaPool) Put(key, value []byte) error {
-	fmt.Printf("MegaPool(%p).Put: locking\n", p)
 	p.mu.Lock()
-	defer func() { fmt.Printf("MegaPool(%p).Put: unlocking\n", p); p.mu.Unlock() }()
+	defer p.mu.Unlock()
 	var err error
 
 	startSync := p.header.StartFree
@@ -393,8 +389,6 @@ func (p *MegaPool) Put(key, value []byte) error {
 }
 
 func (p *MegaPool) enforceBounds(nodeOffset int64) error {
-	fmt.Printf("enforceBounds %d\n", nodeOffset)
-	defer fmt.Printf("enforceBounds %d DONE\n", nodeOffset)
 	node := p.nodeAt(nodeOffset)
 	if node == nil {
 		return nil
@@ -542,9 +536,8 @@ func (p *MegaPool) rotateLeft(rootOffset int64) int64 {
 
 // Get retrieves a value by key.
 func (p *MegaPool) Get(key []byte) ([]byte, error) {
-	fmt.Printf("MegaPool(%p).Get: rlocking\n", p)
 	p.mu.RLock()
-	defer func() { fmt.Printf("MegaPool(%p).Get: runlocking\n", p); p.mu.RUnlock() }()
+	defer p.mu.RUnlock()
 	return p.get(key)
 }
 
@@ -567,8 +560,6 @@ func (p *MegaPool) get(key []byte) ([]byte, error) {
 }
 
 func (p *MegaPool) search(nodeOffset int64, key []byte, depth int) int64 {
-	fmt.Printf("search %d depth %d\n", nodeOffset, depth)
-	defer fmt.Printf("search %d depth %d DONE\n", nodeOffset, depth)
 	if depth > MaxDepth {
 		panic("MegaPool cycle detected or tree too deep")
 	}
@@ -601,25 +592,22 @@ func (p *MegaPool) search(nodeOffset int64, key []byte, depth int) int64 {
 
 // Exists checks if a key exists in the store.
 func (p *MegaPool) Exists(key []byte) bool {
-	fmt.Printf("MegaPool(%p).Exists: rlocking\n", p)
 	p.mu.RLock()
-	defer func() { fmt.Printf("MegaPool(%p).Exists: runlocking\n", p); p.mu.RUnlock() }()
+	defer p.mu.RUnlock()
 	return p.search(p.header.BtreeRoot, key, 0) != 0
 }
 
 // Size returns the total size of the pool file.
 func (p *MegaPool) Size() int64 {
-	fmt.Printf("MegaPool(%p).Size: rlocking\n", p)
 	p.mu.RLock()
-	defer func() { fmt.Printf("MegaPool(%p).Size: runlocking\n", p); p.mu.RUnlock() }()
+	defer p.mu.RUnlock()
 	return p.header.Size
 }
 
 // Flush syncs the mmapped data to disk.
 func (p *MegaPool) Flush() error {
-	fmt.Printf("MegaPool(%p).Flush: locking\n", p)
 	p.mu.Lock()
-	defer func() { fmt.Printf("MegaPool(%p).Flush: unlocking\n", p); p.mu.Unlock() }()
+	defer p.mu.Unlock()
 	return p.flush()
 }
 
@@ -676,9 +664,8 @@ func (p *MegaPool) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (m
 
 // Keys returns all keys in the store.
 func (p *MegaPool) Keys() [][]byte {
-	fmt.Printf("MegaPool(%p).Keys: rlocking\n", p)
 	p.mu.RLock()
-	defer func() { fmt.Printf("MegaPool(%p).Keys: runlocking\n", p); p.mu.RUnlock() }()
+	defer p.mu.RUnlock()
 	return p.keys()
 }
 
@@ -760,9 +747,8 @@ func (p *MegaPool) iterate(nodeOffset int64, f func([]byte, []byte) error) error
 // Delete removes a key and its value from the store.
 // Delete removes a key and its value from the store.
 func (p *MegaPool) Delete(key []byte) error {
-	fmt.Printf("MegaPool(%p).Delete: locking\n", p)
 	p.mu.Lock()
-	defer func() { fmt.Printf("MegaPool(%p).Delete: unlocking\n", p); p.mu.Unlock() }()
+	defer p.mu.Unlock()
 
 	startSync := p.header.StartFree
 	root, err := p.deleteNode(p.header.BtreeRoot, key)
