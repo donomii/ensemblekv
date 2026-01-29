@@ -61,7 +61,7 @@ func OpenMegaPool(path string, size int64) (*MegaPool, error) {
 	info, err := f.Stat()
 	if err != nil {
 		f.Close()
-		panic(err)
+		return nil, err
 	}
 	fileSize := info.Size()
 
@@ -833,7 +833,7 @@ func (p *MegaPool) deleteNode(nodeOffset int64, key []byte) (int64, error) {
 		// Node with two children: Get the inorder successor (smallest in the right subtree)
 		minRight := p.minNode(node.Right)
 		minRightKey := p.readBytes(minRight.KeyOffset, minRight.KeyLen)
-		minRightVal := p.readBytes(minRight.DataOffset, minRight.DataLen)
+		//minRightVal := p.readBytes(minRight.DataOffset, minRight.DataLen)
 
 		// Copy data to current node
 		// Actually, we should probably just update offsets if we wanted to be pure COW,
