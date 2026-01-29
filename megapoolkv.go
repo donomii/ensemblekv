@@ -397,7 +397,7 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 	p.enforceBounds(nodeOffset)
 	node := p.nodeAt(nodeOffset)
 	if node == nil {
-		return 0, errors.New("corrupted tree: invalid node offset")
+		return 0, errors.New("corrupted tree: invalid node offset " + strconv.FormatInt(nodeOffset, 10))
 	}
 
 	nodeKey := p.readBytes(node.KeyOffset, node.KeyLen)
