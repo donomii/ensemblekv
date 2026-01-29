@@ -253,11 +253,17 @@ func (p *MegaPool) insertData(data []byte) (int64, error) {
 // Helper to get a pointer to a node at a given offset
 func (p *MegaPool) nodeAt(offset int64) *MegaNode {
 	// fmt.Printf("nodeAt %d\n", offset)
-	if offset <= 0 || offset >= int64(len(p.data)) {
+	if offset <= 0 {
+		fmt.Printf("corrupted tree: invalid node offset %d less than 0\n", offset)
+		return nil
+	}
+	if offset >= int64(len(p.data)) {
+		fmt.Printf("corrupted tree: invalid node offset %d greater than file size %d\n", offset, p.header.Size)
 		return nil
 	}
 	// Check if node fits
 	if offset+int64(unsafe.Sizeof(MegaNode{})) > int64(len(p.data)) {
+		fmt.Printf("corrupted tree: invalid node offset %d greater than file size %d\n", offset, p.header.Size)
 		return nil
 	}
 	// Unsafe casting to access struct at offset
