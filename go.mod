@@ -8,7 +8,6 @@ require (
 	github.com/donomii/goof v0.0.0-20230125141827-464a0fadad76
 	github.com/iand/gonudb v0.4.4
 	github.com/recoilme/pudge v1.0.3
-
 	go.etcd.io/bbolt v1.3.11
 	golang.org/x/sys v0.30.0
 	modernc.org/sqlite v1.32.0
@@ -16,6 +15,7 @@ require (
 
 require (
 	github.com/OneOfOne/xxhash v1.2.8 // indirect
+	github.com/donomii/genericsyncmap v0.0.0-20260127232404-8c9580dc73fb // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-logr/logr v1.3.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect

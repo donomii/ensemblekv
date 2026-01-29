@@ -11,8 +11,10 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
-	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/donomii/clusterF/syncmap"
 )
 
 // This is ensemblekv, a key-value store that uses multiple sub-stores to store data. It is designed to be used with large data sets that do not fit into other kv stores, while still being able to use the features of those kv stores.
@@ -51,18 +53,17 @@ type HashFunc func(data []byte) uint64
 type EnsembleKv struct {
 	DefaultOps
 	directory   string
-	substores   []KvLike
-	flushStore  []bool
+	substores   *syncmap.SyncMap[int, KvLike]
+	flushStore  *syncmap.SyncMap[int, bool]
 	hashFunc    HashFunc
 	N           int64
 	maxKeys     int64
 	maxBlock    int64
-	totalKeys   int64 // Total number of keys across all substores
-	mutex       sync.Mutex
+	totalKeys   atomic.Int64 // Total number of keys across all substores
 	generation  int64
 	createStore CreatorFunc
 	filesize    int64
-	running     bool
+	running     atomic.Bool
 }
 
 func NewEnsembleKv(directory string, N, maxBlock, maxKeys, filesie int64, createStore CreatorFunc) (*EnsembleKv, error) {
@@ -74,6 +75,8 @@ func NewEnsembleKv(directory string, N, maxBlock, maxKeys, filesie int64, create
 		createStore: createStore,
 		hashFunc:    defaultHashFunc,
 		filesize:    filesie,
+		substores:   syncmap.NewSyncMap[int, KvLike](),
+		flushStore:  syncmap.NewSyncMap[int, bool](),
 	}
 
 	if err := os.MkdirAll(directory, os.ModePerm); err != nil {
@@ -91,10 +94,8 @@ func NewEnsembleKv(directory string, N, maxBlock, maxKeys, filesie int64, create
 
 	store.saveMetadata()
 
-	store.flushStore = make([]bool, len(store.substores))
-
 	go store.flushWorker()
-	store.running = true
+	store.running.Store(true)
 
 	return store, nil
 }
@@ -102,17 +103,22 @@ func NewEnsembleKv(directory string, N, maxBlock, maxKeys, filesie int64, create
 func (s *EnsembleKv) flushWorker() {
 	// Periodically flush the substores to disk
 	for {
-		time.Sleep(10 * time.Minute)
-		for i, substore := range s.substores {
-			if !s.running {
-				continue
-			}
-			if err := substore.Flush(); err != nil {
-				fmt.Printf("Error flushing substore %d: %v\n", i, err)
-			} else {
-				s.flushStore[i] = false
-			}
+		time.Sleep(10 * time.Second)
+		if !s.running.Load() {
+			continue
 		}
+		s.flushStore.Range(func(i int, needsFlush bool) bool {
+			if needsFlush {
+				if substore, ok := s.substores.Load(i); ok {
+					if err := substore.Flush(); err != nil {
+						fmt.Printf("Error flushing substore %d: %v\n", i, err)
+					} else {
+						s.flushStore.Store(i, false)
+					}
+				}
+			}
+			return true
+		})
 	}
 }
 
@@ -129,7 +135,7 @@ func (s *EnsembleKv) setup() error {
 		if err != nil {
 			return err
 		}
-		s.substores = append(s.substores, substore)
+		s.substores.Store(int(i), substore)
 	}
 
 	return nil
@@ -151,14 +157,12 @@ func defaultHashFunc(data []byte) uint64 {
 
 // hashToIndex maps a hash value to an index of a substore.
 func (s *EnsembleKv) hashToIndex(hash uint64) int {
-	return int(hash) % len(s.substores)
+	return int(hash) % int(s.N)
 }
 
 func (s *EnsembleKv) KeyHistory(key []byte) ([][]byte, error) {
-	fmt.Printf("Ensemble(%p).KeyHistory: locking\n", s)
-	s.mutex.Lock()
-	defer func() { fmt.Printf("Ensemble(%p).KeyHistory: unlocking\n", s); s.mutex.Unlock() }()
-	if !s.running {
+	fmt.Printf("Ensemble(%p).KeyHistory: lock-free\n", s)
+	if !s.running.Load() {
 		return nil, fmt.Errorf("store is closed")
 	}
 
@@ -169,57 +173,58 @@ func (s *EnsembleKv) KeyHistory(key []byte) ([][]byte, error) {
 	hash := s.hashFunc(key)
 	index := s.hashToIndex(hash)
 
-	// Check if the key might be in the current index
-	if index < len(s.substores) {
-		history, err := s.substores[index].KeyHistory(key)
-		if err == nil && len(history) > 0 {
-			allHistory = append(allHistory, history...)
-		}
-	}
-
-	// Also check all other substores in case the key was previously in a different substore
-	for i, substore := range s.substores {
-		if i == index {
-			continue // Already checked this one
-		}
-
+	// Check the natural home for this key
+	if substore, ok := s.substores.Load(index); ok {
 		history, err := substore.KeyHistory(key)
 		if err == nil && len(history) > 0 {
 			allHistory = append(allHistory, history...)
 		}
 	}
 
+	// Also check all other substores in case the key was previously in a different substore
+	s.substores.Range(func(i int, substore KvLike) bool {
+		if i == index {
+			return true // Already checked
+		}
+		history, err := substore.KeyHistory(key)
+		if err == nil && len(history) > 0 {
+			allHistory = append(allHistory, history...)
+		}
+		return true
+	})
+
 	return allHistory, nil
 }
 
 func (s *EnsembleKv) Keys() [][]byte {
-	fmt.Printf("Ensemble(%p).Keys: locking\n", s)
-	s.mutex.Lock()
-	defer func() { fmt.Printf("Ensemble(%p).Keys: unlocking\n", s); s.mutex.Unlock() }()
-	if !s.running {
+	fmt.Printf("Ensemble(%p).Keys: lock-free\n", s)
+	if !s.running.Load() {
 		return nil
 	}
 
 	var keys [][]byte
 
 	// Get keys from substores
-	for _, substore := range s.substores {
+	s.substores.Range(func(i int, substore KvLike) bool {
 		subKeys := substore.Keys()
 		keys = append(keys, subKeys...)
-	}
+		return true
+	})
 
 	return keys
 }
 
 // Get retrieves a value for a given key from the appropriate substore.
 func (s *EnsembleKv) Get(key []byte) ([]byte, error) {
-	if !s.running {
+	if !s.running.Load() {
 		return nil, fmt.Errorf("store is closed")
 	}
 	hash := s.hashFunc(key)
 	index := s.hashToIndex(hash)
-	//fmt.Printf("Getting key %v from substore %d\n", clampString(string(key), 100), index) //FIXME make debug log
-	return s.substores[index].Get(key)
+	if substore, ok := s.substores.Load(index); ok {
+		return substore.Get(key)
+	}
+	return nil, fmt.Errorf("substore %d not found", index)
 }
 
 func clampString(in string, length int) string {
@@ -233,87 +238,95 @@ func clampString(in string, length int) string {
 
 // Adjusted Put method to track the total number of keys and trigger rebalance if needed.
 func (s *EnsembleKv) Put(key []byte, val []byte) error {
-	if !s.running {
+	if !s.running.Load() {
 		return fmt.Errorf("store is closed")
 	}
 	hash := s.hashFunc(key)
 	index := s.hashToIndex(hash)
-	//fmt.Printf("Putting key %v in substore %d.  %v keys in total\n", clampString(string(key), 100), index, s.totalKeys) //FIXME make debug log
-	if err := s.substores[index].Put(key, val); err != nil {
-		return err
+	if substore, ok := s.substores.Load(index); ok {
+		if err := substore.Put(key, val); err != nil {
+			return err
+		}
+
+		// Increment total key count
+		s.totalKeys.Add(1)
+		s.flushStore.Store(index, true)
+		return nil
 	}
-
-	// Increment total key count
-	s.totalKeys = s.totalKeys + 1
-
-	s.flushStore[index] = true
-
-	return nil
+	return fmt.Errorf("substore %d not found", index)
 }
 
 // Delete removes a key-value pair from the appropriate substore.
 func (s *EnsembleKv) Delete(key []byte) error {
-	fmt.Printf("Ensemble(%p).Delete: locking\n", s)
-	s.mutex.Lock()
-	defer func() { fmt.Printf("Ensemble(%p).Delete: unlocking\n", s); s.mutex.Unlock() }()
-	if !s.running {
+	fmt.Printf("Ensemble(%p).Delete: lock-free\n", s)
+	if !s.running.Load() {
 		return fmt.Errorf("store is closed")
 	}
 
 	hash := s.hashFunc(key)
 	index := s.hashToIndex(hash)
 
-	// Decriment total key count
-	s.totalKeys = s.totalKeys - 1
-
-	s.flushStore[index] = true
-	return s.substores[index].Delete(key)
+	if substore, ok := s.substores.Load(index); ok {
+		if err := substore.Delete(key); err != nil {
+			return err
+		}
+		// Decriment total key count
+		s.totalKeys.Add(-1)
+		s.flushStore.Store(index, true)
+		return nil
+	}
+	return fmt.Errorf("substore %d not found", index)
 }
 
 // Exists checks if a key exists in the appropriate substore.
 func (s *EnsembleKv) Exists(key []byte) bool {
-	fmt.Printf("Ensemble(%p).Exists: locking\n", s)
-	s.mutex.Lock()
-	defer func() { fmt.Printf("Ensemble(%p).Exists: unlocking\n", s); s.mutex.Unlock() }()
-	if !s.running {
+	fmt.Printf("Ensemble(%p).Exists: lock-free\n", s)
+	if !s.running.Load() {
 		return false
 	}
 
 	hash := s.hashFunc(key)
 	index := s.hashToIndex(hash)
-	return s.substores[index].Exists(key)
+	if substore, ok := s.substores.Load(index); ok {
+		return substore.Exists(key)
+	}
+	return false
 }
 
 // Flush calls Flush on all substores.
 func (s *EnsembleKv) Flush() error {
-	fmt.Printf("Ensemble(%p).Flush: locking\n", s)
-	s.mutex.Lock()
-	defer func() { fmt.Printf("Ensemble(%p).Flush: unlocking\n", s); s.mutex.Unlock() }()
-	if !s.running {
+	fmt.Printf("Ensemble(%p).Flush: lock-free\n", s)
+	if !s.running.Load() {
 		return fmt.Errorf("store is closed")
 	}
 
-	for _, substore := range s.substores {
+	var firstErr error
+	s.substores.Range(func(i int, substore KvLike) bool {
 		if err := substore.Flush(); err != nil {
-			return err
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
-	}
-	return nil
+		return true
+	})
+	return firstErr
 }
 
 // Close closes all substores.
 func (s *EnsembleKv) Close() error {
-	fmt.Printf("Ensemble(%p).Close: locking\n", s)
-	s.mutex.Lock()
-	defer func() { fmt.Printf("Ensemble(%p).Close: unlocking\n", s); s.mutex.Unlock() }()
-	s.running = false
+	fmt.Printf("Ensemble(%p).Close: lock-free\n", s)
+	s.running.Store(false)
 
-	for _, substore := range s.substores {
+	var firstErr error
+	s.substores.Range(func(i int, substore KvLike) bool {
 		if err := substore.Close(); err != nil {
-			return err
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
-	}
-	return nil
+		return true
+	})
+	return firstErr
 }
 
 // Metadata represents the persistent state of the Store.
@@ -328,7 +341,7 @@ func (s *EnsembleKv) saveMetadata() error {
 	metadata := Metadata{
 		Generation: s.generation,
 		N:          s.N,
-		TotalKeys:  s.totalKeys,
+		TotalKeys:  s.totalKeys.Load(),
 	}
 	data, err := json.Marshal(metadata)
 	if err != nil {
@@ -354,7 +367,7 @@ func (s *EnsembleKv) loadMetadata() error {
 	}
 	s.generation = metadata.Generation
 	s.N = metadata.N
-	s.totalKeys = metadata.TotalKeys
+	s.totalKeys.Store(metadata.TotalKeys)
 	return nil
 }
 
@@ -387,14 +400,13 @@ func (s *EnsembleKv) MapFunc(f func(key []byte, value []byte) error) (map[string
 
 // Size returns the total number of keys in the store.
 func (s *EnsembleKv) Size() int64 {
-	fmt.Printf("Ensemble(%p).Size: locking\n", s)
-	s.mutex.Lock()
-	defer func() { fmt.Printf("Ensemble(%p).Size: unlocking\n", s); s.mutex.Unlock() }()
+	fmt.Printf("Ensemble(%p).Size: lock-free\n", s)
 
 	var total int64
-	for _, substore := range s.substores {
+	s.substores.Range(func(i int, substore KvLike) bool {
 		total += substore.Size()
-	}
+		return true
+	})
 	return total
 }
 
