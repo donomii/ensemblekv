@@ -333,7 +333,9 @@ func (p *MegaPool) copyNode(offset int64) (int64, error) {
 	if src == nil {
 		return 0, fmt.Errorf("copyNode: invalid offset %d", offset)
 	}
-	dst := p.nodeAt(newOffset)
+	// dst is uninitialized, so we cannot use nodeAt (which checks consistency)
+	dst := (*MegaNode)(unsafe.Pointer(&p.data[newOffset]))
+
 	// Refetch src in case alloc resized
 	src = p.nodeAt(offset)
 
