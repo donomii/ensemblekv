@@ -128,7 +128,7 @@ func OpenMegaPool(path string, size int64) (*MegaPool, error) {
 func (p *MegaPool) Close() error {
 	fmt.Printf("MegaPool(%p).Close: locking\n", p)
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer func() { fmt.Printf("MegaPool(%p).Close: unlocking\n", p); p.mu.Unlock() }()
 
 	if err := p.flush(); err != nil {
 		return err
@@ -149,7 +149,7 @@ func (p *MegaPool) Close() error {
 func (p *MegaPool) Alloc(size int64) (int64, error) {
 	fmt.Printf("MegaPool(%p).Alloc: locking\n", p)
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer func() { fmt.Printf("MegaPool(%p).Alloc: unlocking\n", p); p.mu.Unlock() }()
 	return p.alloc(size)
 }
 
@@ -231,7 +231,7 @@ func (p *MegaPool) resize(newSize int64) error {
 func (p *MegaPool) InsertData(data []byte) (int64, error) {
 	fmt.Printf("MegaPool(%p).InsertData: locking\n", p)
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer func() { fmt.Printf("MegaPool(%p).InsertData: unlocking\n", p); p.mu.Unlock() }()
 	return p.insertData(data)
 }
 
@@ -286,7 +286,7 @@ func (p *MegaPool) readBytes(offset, length int64) []byte {
 func (p *MegaPool) Put(key, value []byte) error {
 	fmt.Printf("MegaPool(%p).Put: locking\n", p)
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer func() { fmt.Printf("MegaPool(%p).Put: unlocking\n", p); p.mu.Unlock() }()
 	var err error
 
 	// Implement "write data first" policy
@@ -453,7 +453,7 @@ func (p *MegaPool) rotateLeft(rootOffset int64) int64 {
 func (p *MegaPool) Get(key []byte) ([]byte, error) {
 	fmt.Printf("MegaPool(%p).Get: rlocking\n", p)
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	defer func() { fmt.Printf("MegaPool(%p).Get: runlocking\n", p); p.mu.RUnlock() }()
 	return p.get(key)
 }
 
@@ -507,7 +507,7 @@ func (p *MegaPool) search(nodeOffset int64, key []byte) int64 {
 func (p *MegaPool) Exists(key []byte) bool {
 	fmt.Printf("MegaPool(%p).Exists: rlocking\n", p)
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	defer func() { fmt.Printf("MegaPool(%p).Exists: runlocking\n", p); p.mu.RUnlock() }()
 	return p.search(p.header.BtreeRoot, key) != 0
 }
 
@@ -515,7 +515,7 @@ func (p *MegaPool) Exists(key []byte) bool {
 func (p *MegaPool) Size() int64 {
 	fmt.Printf("MegaPool(%p).Size: rlocking\n", p)
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	defer func() { fmt.Printf("MegaPool(%p).Size: runlocking\n", p); p.mu.RUnlock() }()
 	return p.header.Size
 }
 
@@ -523,7 +523,7 @@ func (p *MegaPool) Size() int64 {
 func (p *MegaPool) Flush() error {
 	fmt.Printf("MegaPool(%p).Flush: locking\n", p)
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer func() { fmt.Printf("MegaPool(%p).Flush: unlocking\n", p); p.mu.Unlock() }()
 	return p.flush()
 }
 
@@ -582,7 +582,7 @@ func (p *MegaPool) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (m
 func (p *MegaPool) Keys() [][]byte {
 	fmt.Printf("MegaPool(%p).Keys: rlocking\n", p)
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	defer func() { fmt.Printf("MegaPool(%p).Keys: runlocking\n", p); p.mu.RUnlock() }()
 	return p.keys()
 }
 
@@ -602,7 +602,7 @@ func (p *MegaPool) keys() [][]byte {
 func (p *MegaPool) KeyHistory(key []byte) ([][]byte, error) {
 	fmt.Printf("MegaPool(%p).KeyHistory: rlocking\n", p)
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	defer func() { fmt.Printf("MegaPool(%p).KeyHistory: runlocking\n", p); p.mu.RUnlock() }()
 	val, err := p.get(key)
 	if err != nil {
 		return nil, err
@@ -617,7 +617,7 @@ func (p *MegaPool) KeyHistory(key []byte) ([][]byte, error) {
 func (p *MegaPool) DumpIndex() error {
 	fmt.Printf("MegaPool(%p).DumpIndex: rlocking\n", p)
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	defer func() { fmt.Printf("MegaPool(%p).DumpIndex: runlocking\n", p); p.mu.RUnlock() }()
 	fmt.Println("MegaPool Index Dump:")
 	return p.iterate(p.header.BtreeRoot, func(key, val []byte) error {
 		fmt.Printf("Key: %s, ValueLen: %d\n", string(key), len(val))
@@ -665,7 +665,7 @@ func (p *MegaPool) iterate(nodeOffset int64, f func([]byte, []byte) error) error
 func (p *MegaPool) Delete(key []byte) error {
 	fmt.Printf("MegaPool(%p).Delete: locking\n", p)
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer func() { fmt.Printf("MegaPool(%p).Delete: unlocking\n", p); p.mu.Unlock() }()
 	root, err := p.deleteNode(p.header.BtreeRoot, key)
 	if err != nil {
 		return err

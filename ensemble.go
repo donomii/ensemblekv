@@ -157,7 +157,7 @@ func (s *EnsembleKv) hashToIndex(hash uint64) int {
 func (s *EnsembleKv) KeyHistory(key []byte) ([][]byte, error) {
 	fmt.Printf("Ensemble(%p).KeyHistory: locking\n", s)
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	defer func() { fmt.Printf("Ensemble(%p).KeyHistory: unlocking\n", s); s.mutex.Unlock() }()
 	if !s.running {
 		return nil, fmt.Errorf("store is closed")
 	}
@@ -195,7 +195,7 @@ func (s *EnsembleKv) KeyHistory(key []byte) ([][]byte, error) {
 func (s *EnsembleKv) Keys() [][]byte {
 	fmt.Printf("Ensemble(%p).Keys: locking\n", s)
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	defer func() { fmt.Printf("Ensemble(%p).Keys: unlocking\n", s); s.mutex.Unlock() }()
 	if !s.running {
 		return nil
 	}
@@ -255,7 +255,7 @@ func (s *EnsembleKv) Put(key []byte, val []byte) error {
 func (s *EnsembleKv) Delete(key []byte) error {
 	fmt.Printf("Ensemble(%p).Delete: locking\n", s)
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	defer func() { fmt.Printf("Ensemble(%p).Delete: unlocking\n", s); s.mutex.Unlock() }()
 	if !s.running {
 		return fmt.Errorf("store is closed")
 	}
@@ -274,7 +274,7 @@ func (s *EnsembleKv) Delete(key []byte) error {
 func (s *EnsembleKv) Exists(key []byte) bool {
 	fmt.Printf("Ensemble(%p).Exists: locking\n", s)
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	defer func() { fmt.Printf("Ensemble(%p).Exists: unlocking\n", s); s.mutex.Unlock() }()
 	if !s.running {
 		return false
 	}
@@ -288,7 +288,7 @@ func (s *EnsembleKv) Exists(key []byte) bool {
 func (s *EnsembleKv) Flush() error {
 	fmt.Printf("Ensemble(%p).Flush: locking\n", s)
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	defer func() { fmt.Printf("Ensemble(%p).Flush: unlocking\n", s); s.mutex.Unlock() }()
 	if !s.running {
 		return fmt.Errorf("store is closed")
 	}
@@ -305,7 +305,7 @@ func (s *EnsembleKv) Flush() error {
 func (s *EnsembleKv) Close() error {
 	fmt.Printf("Ensemble(%p).Close: locking\n", s)
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	defer func() { fmt.Printf("Ensemble(%p).Close: unlocking\n", s); s.mutex.Unlock() }()
 	s.running = false
 
 	for _, substore := range s.substores {
@@ -389,7 +389,7 @@ func (s *EnsembleKv) MapFunc(f func(key []byte, value []byte) error) (map[string
 func (s *EnsembleKv) Size() int64 {
 	fmt.Printf("Ensemble(%p).Size: locking\n", s)
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	defer func() { fmt.Printf("Ensemble(%p).Size: unlocking\n", s); s.mutex.Unlock() }()
 
 	var total int64
 	for _, substore := range s.substores {
