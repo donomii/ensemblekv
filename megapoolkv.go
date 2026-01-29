@@ -254,27 +254,34 @@ func (p *MegaPool) insertData(data []byte) (int64, error) {
 func (p *MegaPool) nodeAt(offset int64) *MegaNode {
 	// fmt.Printf("nodeAt %d\n", offset)
 	if offset <= 0 {
-		fmt.Printf("corrupted tree: invalid node offset %d less than 0\n", offset)
-		return nil
+		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
+		fmt.Printf(msg)
+		panic(msg)
 	}
 	if offset >= int64(len(p.data)) {
-		fmt.Printf("corrupted tree: invalid node offset %d greater than file size %d\n", offset, p.header.Size)
-		return nil
+		msg := fmt.Sprintf("corrupted tree: invalid node offset %d greater than file size %d\n", offset, p.header.Size)
+		fmt.Printf(msg)
+		panic(msg)
 	}
 	// Check if node fits
 	if offset+int64(unsafe.Sizeof(MegaNode{})) > int64(len(p.data)) {
-		fmt.Printf("corrupted tree: invalid node offset %d greater than file size %d\n", offset, p.header.Size)
-		return nil
+		msg := fmt.Sprintf("corrupted tree: invalid node offset %d greater than file size %d\n", offset, p.header.Size)
+		fmt.Printf(msg)
+		panic(msg)
 	}
 	// Unsafe casting to access struct at offset
 	node := (*MegaNode)(unsafe.Pointer(&p.data[offset]))
 	// Now access the members to make sure they are valid
 	test := node.Left + node.Right + node.KeyOffset + node.DataOffset + node.DataLen + node.Bumper + node.BumperL + node.Bumper
 	if test < 0 { // Golang :(
-		return nil
+		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
+		fmt.Printf(msg)
+		panic(msg)
 	}
 	if node.Bumper != ^node.BumperL {
-		panic("corrupted node at " + strconv.FormatInt(offset, 10))
+		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
+		fmt.Printf(msg)
+		panic(msg)
 	}
 	return node
 }
@@ -283,10 +290,14 @@ func (p *MegaPool) nodeAt(offset int64) *MegaNode {
 func (p *MegaPool) readBytes(offset, length int64) []byte {
 	// fmt.Printf("readBytes %d %d\n", offset, length)
 	if offset <= 0 || length <= 0 || offset+length > int64(len(p.data)) {
-		return nil
+		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
+		fmt.Printf(msg)
+		panic(msg)
 	}
 	if length < 1 {
-		return nil
+		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
+		fmt.Printf(msg)
+		panic(msg)
 	}
 	return p.data[offset : offset+length]
 }
