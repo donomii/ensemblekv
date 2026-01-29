@@ -267,22 +267,25 @@ func (p *MegaPool) insertData(data []byte) (int64, error) {
 
 // Helper to get a pointer to a node at a given offset
 func (p *MegaPool) nodeAt(offset int64) *MegaNode {
-	fmt.Printf("nodeAt %d\n", offset)
+	//fmt.Printf("nodeAt %d\n", offset)
 	if offset <= 0 {
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
 		fmt.Print(msg)
-		panicWithStack(msg)
+		//panicWithStack(msg)
+		return nil
 	}
 	if offset >= int64(len(p.data)) {
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d greater than file size %d\n", offset, p.header.Size)
 		fmt.Print(msg)
-		panicWithStack(msg)
+		//panicWithStack(msg)
+		return nil
 	}
 	// Check if node fits
 	if offset+int64(unsafe.Sizeof(MegaNode{})) > int64(len(p.data)) {
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d greater than file size %d\n", offset, p.header.Size)
 		fmt.Print(msg)
-		panicWithStack(msg)
+		//panicWithStack(msg)
+		return nil
 	}
 	// Unsafe casting to access struct at offset
 	node := (*MegaNode)(unsafe.Pointer(&p.data[offset]))
@@ -291,12 +294,14 @@ func (p *MegaPool) nodeAt(offset int64) *MegaNode {
 	if test < 0 { // Golang :(
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
 		fmt.Print(msg)
-		panicWithStack(msg)
+		//panicWithStack(msg)
+		return nil
 	}
 	if node.Bumper != ^node.BumperL {
 		msg := fmt.Sprintf("corrupted tree: bumper mismatch at %d\n", offset)
 		fmt.Print(msg)
-		panicWithStack(msg)
+		//panicWithStack(msg)
+		return nil
 	}
 	return node
 }
@@ -348,7 +353,7 @@ func (p *MegaPool) copyNode(offset int64) (int64, error) {
 
 	src := p.nodeAt(offset)
 	if src == nil {
-		panicWithStack(fmt.Errorf("copyNode: invalid offset %d", offset))
+		return 0, fmt.Errorf("copyNode: invalid offset %d", offset)
 	}
 	// dst is uninitialized, so we cannot use nodeAt (which checks consistency)
 	dst := (*MegaNode)(unsafe.Pointer(&p.data[newOffset]))
@@ -418,46 +423,50 @@ func (p *MegaPool) enforceBounds(nodeOffset int64) error {
 	}
 	if node.Left < 0 {
 		fmt.Printf("corrupted tree: left child of node at %d is invalid(%v)\n", nodeOffset, node.Left)
-		node.Left = 0
+
+		return fmt.Errorf("corrupted tree: left child of node at %d is invalid(%v)", nodeOffset, node.Left)
 	}
 	if node.Right < 0 {
 		fmt.Printf("corrupted tree: right child of node at %d is invalid(%v)\n", nodeOffset, node.Right)
-		node.Right = 0
+
+		return fmt.Errorf("corrupted tree: right child of node at %d is invalid(%v)", nodeOffset, node.Right)
 	}
 
 	if node.Left >= p.header.Size-int64(unsafe.Sizeof(MegaNode{})) {
 		fmt.Printf("corrupted tree: left child of node at %d is invalid(%v greater than file size %v)\n", nodeOffset, node.Left, p.header.Size)
-		node.Left = 0
+
+		return fmt.Errorf("corrupted tree: left child of node at %d is invalid(%v greater than file size %v)", nodeOffset, node.Left, p.header.Size)
 	}
 	if node.Right >= p.header.Size-int64(unsafe.Sizeof(MegaNode{})) {
 		fmt.Printf("corrupted tree: right child of node at %d is invalid(%v greater than file size %v)\n", nodeOffset, node.Right, p.header.Size)
-		node.Right = 0
+
+		return fmt.Errorf("corrupted tree: right child of node at %d is invalid(%v greater than file size %v)", nodeOffset, node.Right, p.header.Size)
 	}
 	if node.KeyOffset+node.KeyLen >= p.header.Size {
 		fmt.Printf("corrupted tree: key of node at %d is invalid(%v greater than file size %v)\n", nodeOffset, node.KeyOffset+node.KeyLen, p.header.Size)
-		node.KeyOffset = 0
-		node.KeyLen = 0
+
+		return fmt.Errorf("corrupted tree: key of node at %d is invalid(%v greater than file size %v)", nodeOffset, node.KeyOffset+node.KeyLen, p.header.Size)
 	}
 	if node.DataOffset+node.DataLen >= p.header.Size {
 		fmt.Printf("corrupted tree: data of node at %d is invalid(%v greater than file size %v)\n", nodeOffset, node.DataOffset+node.DataLen, p.header.Size)
-		node.DataOffset = 0
-		node.DataLen = 0
+
+		return fmt.Errorf("corrupted tree: data of node at %d is invalid(%v greater than file size %v)", nodeOffset, node.DataOffset+node.DataLen, p.header.Size)
 	}
 
 	if node.KeyOffset < 0 {
 		fmt.Printf("corrupted tree: key of node at %d is invalid(%v less than 0)\n", nodeOffset, node.KeyOffset)
-		node.KeyOffset = 0
-		node.KeyLen = 0
+
+		return fmt.Errorf("corrupted tree: key of node at %d is invalid(%v less than 0)", nodeOffset, node.KeyOffset)
 	}
 	if node.DataOffset < 0 {
 		fmt.Printf("corrupted tree: data of node at %d is invalid(%v less than 0)\n", nodeOffset, node.DataOffset)
-		node.DataOffset = 0
-		node.DataLen = 0
+
+		return fmt.Errorf("corrupted tree: data of node at %d is invalid(%v less than 0)", nodeOffset, node.DataOffset)
 	}
 
 	if node.Bumper != ^node.BumperL {
 		fmt.Printf("corrupted tree: bumper mismatch at %d\n", nodeOffset)
-		panicWithStack("corrupted tree: bumper mismatch")
+		return fmt.Errorf("corrupted tree: bumper mismatch at %d", nodeOffset)
 	}
 	return nil
 }
@@ -487,17 +496,22 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 		return newOffset, nil
 	}
 
-	p.enforceBounds(nodeOffset)
+	if err := p.enforceBounds(nodeOffset); err != nil {
+		fmt.Printf("Pruning corrupted node in insert (enforceBounds): %v\n", err)
+		return 0, nil
+	}
 
 	// Copy node (COW)
 	myOffset, err := p.copyNode(nodeOffset)
 	if err != nil {
-		panicWithStack(err)
+		fmt.Printf("Pruning corrupted node in insert: %v\n", err)
+		return 0, nil
 	}
 
 	node := p.nodeAt(myOffset)
 	if node == nil {
-		panicWithStack("corrupted tree: invalid node at offset " + strconv.FormatInt(myOffset, 10))
+		fmt.Printf("Pruning corrupted node in insert (nil node): %d\n", myOffset)
+		return 0, nil
 	}
 
 	nodeKey := p.readBytes(node.KeyOffset, node.KeyLen)
@@ -746,10 +760,14 @@ func (p *MegaPool) iterate(nodeOffset int64, f func([]byte, []byte) error) error
 	if nodeOffset < 1 {
 		return nil
 	}
-	p.enforceBounds(nodeOffset)
+	if err := p.enforceBounds(nodeOffset); err != nil {
+		fmt.Printf("Pruning corrupted node in iterate: %v\n", err)
+		return nil
+	}
 	node := p.nodeAt(nodeOffset)
 	if node == nil {
-		panicWithStack("invalid node offset in iteration")
+		fmt.Printf("Pruning corrupted node in iterate (nil node): %d\n", nodeOffset)
+		return nil
 	}
 
 	// Left
@@ -814,7 +832,8 @@ func (p *MegaPool) deleteNode(nodeOffset int64, key []byte) (int64, error) {
 	// Copy node (COW)
 	myOffset, err := p.copyNode(nodeOffset)
 	if err != nil {
-		panicWithStack(err)
+		fmt.Printf("Pruning corrupted node in deleteNode: %v\n", err)
+		return 0, nil
 	}
 	node := p.nodeAt(myOffset) // Safe
 
