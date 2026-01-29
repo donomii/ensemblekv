@@ -161,7 +161,6 @@ func (s *EnsembleKv) hashToIndex(hash uint64) int {
 }
 
 func (s *EnsembleKv) KeyHistory(key []byte) ([][]byte, error) {
-	fmt.Printf("Ensemble(%p).KeyHistory: lock-free\n", s)
 	if !s.running.Load() {
 		return nil, fmt.Errorf("store is closed")
 	}
@@ -197,7 +196,6 @@ func (s *EnsembleKv) KeyHistory(key []byte) ([][]byte, error) {
 }
 
 func (s *EnsembleKv) Keys() [][]byte {
-	fmt.Printf("Ensemble(%p).Keys: lock-free\n", s)
 	if !s.running.Load() {
 		return nil
 	}
@@ -258,7 +256,6 @@ func (s *EnsembleKv) Put(key []byte, val []byte) error {
 
 // Delete removes a key-value pair from the appropriate substore.
 func (s *EnsembleKv) Delete(key []byte) error {
-	fmt.Printf("Ensemble(%p).Delete: lock-free\n", s)
 	if !s.running.Load() {
 		return fmt.Errorf("store is closed")
 	}
@@ -295,7 +292,6 @@ func (s *EnsembleKv) Exists(key []byte) bool {
 
 // Flush calls Flush on all substores.
 func (s *EnsembleKv) Flush() error {
-	fmt.Printf("Ensemble(%p).Flush: lock-free\n", s)
 	if !s.running.Load() {
 		return fmt.Errorf("store is closed")
 	}
@@ -314,7 +310,6 @@ func (s *EnsembleKv) Flush() error {
 
 // Close closes all substores.
 func (s *EnsembleKv) Close() error {
-	fmt.Printf("Ensemble(%p).Close: lock-free\n", s)
 	s.running.Store(false)
 
 	var firstErr error
@@ -400,7 +395,6 @@ func (s *EnsembleKv) MapFunc(f func(key []byte, value []byte) error) (map[string
 
 // Size returns the total number of keys in the store.
 func (s *EnsembleKv) Size() int64 {
-	fmt.Printf("Ensemble(%p).Size: lock-free\n", s)
 
 	var total int64
 	s.substores.Range(func(i int, substore KvLike) bool {
