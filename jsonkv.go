@@ -70,9 +70,6 @@ func (s *JsonKV) save() error {
 
 // KeyHistory returns all values for a key, even if they are deleted
 func (s *JsonKV) KeyHistory(key []byte) ([][]byte, error) {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-
 	// JsonKV only maintains current values, no history
 	value, err := s.Get(key)
 	if err != nil {
@@ -159,8 +156,12 @@ func (s *JsonKV) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) 
 
 	visited := make(map[string]bool)
 	for _, k := range keys {
+		val, err := s.Get(k)
+		if err != nil {
+			continue
+		}
 		visited[string(k)] = true
-		if err := f(k, s.data[string(k)]); err != nil {
+		if err := f(k, val); err != nil {
 			return visited, err
 		}
 	}
@@ -176,8 +177,12 @@ func (s *JsonKV) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map
 	for _, kb := range searchKeys {
 		k := string(kb)
 		if strings.HasPrefix(k, prefixStr) {
+			val, err := s.Get(kb)
+			if err != nil {
+				continue
+			}
 			keys[k] = true
-			if err := f([]byte(k), s.data[string(k)]); err != nil {
+			if err := f(kb, val); err != nil {
 				return keys, err
 			}
 		}

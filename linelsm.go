@@ -263,9 +263,6 @@ func (l *Linelsm) Delete(key []byte) error {
 
 // Exists checks if a key exists and is not tombstoned.
 func (l *Linelsm) Exists(key []byte) bool {
-	l.mutex.RLock()
-	defer l.mutex.RUnlock()
-
 	data, err := l.Get(key)
 	return err == nil && data != nil
 }
