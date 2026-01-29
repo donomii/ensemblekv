@@ -523,10 +523,16 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 			panicWithStack(err)
 		}
 		// Refetch myOffset
-		p.nodeAt(myOffset).Left = left
-		// Balance
-		if p.nodeAt(left).Bumper > p.nodeAt(myOffset).Bumper {
-			myOffset = p.rotateRight(myOffset)
+		node := p.nodeAt(myOffset)
+		if node != nil {
+			node.Left = left
+			// Balance
+			if left != 0 {
+				leftNode := p.nodeAt(left)
+				if leftNode != nil && leftNode.Bumper > node.Bumper {
+					myOffset = p.rotateRight(myOffset)
+				}
+			}
 		}
 	} else if cmp > 0 {
 		right, err := p.insert(node.Right, key, keyOff, valOff, keyLen, valLen)
@@ -534,10 +540,16 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 			panicWithStack(err)
 		}
 		// Refetch myOffset
-		p.nodeAt(myOffset).Right = right
-		// Balance
-		if p.nodeAt(right).Bumper > p.nodeAt(myOffset).Bumper {
-			myOffset = p.rotateLeft(myOffset)
+		node := p.nodeAt(myOffset)
+		if node != nil {
+			node.Right = right
+			// Balance
+			if right != 0 {
+				rightNode := p.nodeAt(right)
+				if rightNode != nil && rightNode.Bumper > node.Bumper {
+					myOffset = p.rotateLeft(myOffset)
+				}
+			}
 		}
 	} else {
 		// Update existing node (already copied)
