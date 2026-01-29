@@ -102,7 +102,7 @@ func NewEnsembleKv(directory string, N, maxBlock, maxKeys, filesie int64, create
 func (s *EnsembleKv) flushWorker() {
 	// Periodically flush the substores to disk
 	for {
-		time.Sleep(10 * time.Second)
+		time.Sleep(10 * time.Minute)
 		for i, substore := range s.substores {
 			if !s.running {
 				continue
