@@ -10,8 +10,14 @@ import (
 	"sync"
 	"unsafe"
 
+	"runtime/debug"
+
 	"golang.org/x/sys/unix"
 )
+
+func panicWithStack(err interface{}) {
+	panic(fmt.Sprintf("MegaPool Panic: %v\nStack Trace:\n%s", err, debug.Stack()))
+}
 
 const (
 	MegaMagic      = 0x4D504B56 // "MPKV"
@@ -76,7 +82,7 @@ func OpenMegaPool(path string, size int64) (*MegaPool, error) {
 			// Resize (grow) if requested size is larger.
 			if err := f.Truncate(size); err != nil {
 				f.Close()
-				panic(err)
+				panicWithStack(err)
 			}
 			fileSize = size
 		} else {
@@ -88,7 +94,7 @@ func OpenMegaPool(path string, size int64) (*MegaPool, error) {
 		size = 1 * 1024 * 1024 // 1MB default
 		if err := f.Truncate(size); err != nil {
 			f.Close()
-			panic(err)
+			panicWithStack(err)
 		}
 		fileSize = size
 	} else if size == 0 {
@@ -99,7 +105,7 @@ func OpenMegaPool(path string, size int64) (*MegaPool, error) {
 	data, err := unix.Mmap(int(f.Fd()), 0, int(fileSize), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
 	if err != nil {
 		f.Close()
-		panic(fmt.Errorf("mmap failed: %v", err))
+		panicWithStack(fmt.Errorf("mmap failed: %v", err))
 	}
 
 	pool := &MegaPool{
@@ -119,7 +125,7 @@ func OpenMegaPool(path string, size int64) (*MegaPool, error) {
 	} else {
 		if pool.header.Magic != MegaMagic {
 			pool.Close()
-			panic(fmt.Errorf("invalid magic number: expected %x, got %x", MegaMagic, pool.header.Magic))
+			panicWithStack(fmt.Errorf("invalid magic number: expected %x, got %x", MegaMagic, pool.header.Magic))
 		}
 	}
 
@@ -132,17 +138,17 @@ func (p *MegaPool) Close() error {
 	defer func() { fmt.Printf("MegaPool(%p).Close: unlocking\n", p); p.mu.Unlock() }()
 
 	if err := p.flush(); err != nil {
-		panic(err)
+		panicWithStack(err)
 	}
 	if p.data != nil {
 		if err := unix.Munmap(p.data); err != nil {
-			panic(err)
+			panicWithStack(err)
 		}
 		p.data = nil
 	}
 	if p.file != nil {
 		if err := p.file.Close(); err != nil {
-			panic(err)
+			panicWithStack(err)
 		}
 	}
 	return nil
@@ -159,7 +165,7 @@ func (p *MegaPool) Alloc(size int64) (int64, error) {
 func (p *MegaPool) alloc(size int64) (int64, error) {
 	if size <= 0 {
 		msg := fmt.Sprintf("invalid allocation size: %d", size)
-		panic(msg)
+		panicWithStack(msg)
 	}
 
 	// Align to 8 bytes
@@ -174,7 +180,7 @@ func (p *MegaPool) alloc(size int64) (int64, error) {
 		start = MegaHeaderSize
 	}
 	if start > p.header.Size {
-		panic("free space start corrupted, freespace starts at " + strconv.FormatInt(start, 10))
+		panicWithStack("free space start corrupted, freespace starts at " + strconv.FormatInt(start, 10))
 	}
 	neededFileSize := start + size
 
@@ -187,11 +193,11 @@ func (p *MegaPool) alloc(size int64) (int64, error) {
 		}
 		newFileSize := p.header.Size + extendSize
 		if neededFileSize > newFileSize {
-			panic("Could not extend file")
+			panicWithStack("Could not extend file")
 		}
 
 		if err := p.resize(newFileSize); err != nil {
-			panic(fmt.Errorf("failed to resize pool: %v", err))
+			panicWithStack(fmt.Errorf("failed to resize pool: %v", err))
 		}
 	}
 
@@ -207,12 +213,12 @@ func (p *MegaPool) resize(newSize int64) error {
 
 	// Check that the new size is greater than the current file size
 	if newSize <= p.header.Size {
-		panic("New size(" + strconv.FormatInt(newSize, 10) + ") is less than or equal to current size(" + strconv.FormatInt(p.header.Size, 10) + ")")
+		panicWithStack("New size(" + strconv.FormatInt(newSize, 10) + ") is less than or equal to current size(" + strconv.FormatInt(p.header.Size, 10) + ")")
 	}
 
 	// 1. Unmap current data
 	if err := unix.Munmap(p.data); err != nil {
-		panic("Failed to unmap data file:" + p.path + ": " + err.Error())
+		panicWithStack("Failed to unmap data file:" + p.path + ": " + err.Error())
 	}
 	p.data = nil
 	p.header = nil // Invalidated
@@ -220,13 +226,13 @@ func (p *MegaPool) resize(newSize int64) error {
 	// 2. Truncate file to new size
 
 	if err := p.file.Truncate(newSize); err != nil {
-		panic("Failed to truncate file:" + p.path + " to size:" + strconv.FormatInt(newSize, 10) + ": " + err.Error())
+		panicWithStack("Failed to truncate file:" + p.path + " to size:" + strconv.FormatInt(newSize, 10) + ": " + err.Error())
 	}
 
 	// 3. Remap
 	data, err := unix.Mmap(int(p.file.Fd()), 0, int(newSize), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
 	if err != nil {
-		panic("Failed to remap file:" + p.path + " to size:" + strconv.FormatInt(newSize, 10) + ": " + err.Error())
+		panicWithStack("Failed to remap file:" + p.path + " to size:" + strconv.FormatInt(newSize, 10) + ": " + err.Error())
 	}
 
 	p.data = data
@@ -252,7 +258,7 @@ func (p *MegaPool) insertData(data []byte) (int64, error) {
 	l := int64(len(data))
 	offset, err := p.alloc(l)
 	if err != nil {
-		panic(err)
+		panicWithStack(err)
 	}
 
 	copy(p.data[offset:], data)
@@ -265,18 +271,18 @@ func (p *MegaPool) nodeAt(offset int64) *MegaNode {
 	if offset <= 0 {
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
 		fmt.Print(msg)
-		panic(msg)
+		panicWithStack(msg)
 	}
 	if offset >= int64(len(p.data)) {
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d greater than file size %d\n", offset, p.header.Size)
 		fmt.Print(msg)
-		panic(msg)
+		panicWithStack(msg)
 	}
 	// Check if node fits
 	if offset+int64(unsafe.Sizeof(MegaNode{})) > int64(len(p.data)) {
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d greater than file size %d\n", offset, p.header.Size)
 		fmt.Print(msg)
-		panic(msg)
+		panicWithStack(msg)
 	}
 	// Unsafe casting to access struct at offset
 	node := (*MegaNode)(unsafe.Pointer(&p.data[offset]))
@@ -285,28 +291,33 @@ func (p *MegaPool) nodeAt(offset int64) *MegaNode {
 	if test < 0 { // Golang :(
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
 		fmt.Print(msg)
-		panic(msg)
+		panicWithStack(msg)
 	}
 	if node.Bumper != ^node.BumperL {
 		msg := fmt.Sprintf("corrupted tree: bumper mismatch at %d\n", offset)
 		fmt.Print(msg)
-		panic(msg)
+		panicWithStack(msg)
 	}
 	return node
 }
 
 // Helper to read byte slice from offset
 func (p *MegaPool) readBytes(offset, length int64) []byte {
-	fmt.Printf("readBytes %d %d\n", offset, length)
-	if offset <= 0 || length <= 0 || offset+length > int64(len(p.data)) {
+	//fmt.Printf("readBytes %d %d\n", offset, length)
+	if offset <= 0 {
 		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
 		fmt.Print(msg)
-		panic(msg)
+		panicWithStack(msg)
 	}
-	if length < 1 {
-		msg := fmt.Sprintf("corrupted tree: invalid node offset %d less than 0\n", offset)
+	if length <= 0 {
+		msg := fmt.Sprintf("corrupted tree: invalid length %d less than or equal to 0\n", length)
 		fmt.Print(msg)
-		panic(msg)
+		panicWithStack(msg)
+	}
+	if offset+length > int64(len(p.data)) {
+		msg := fmt.Sprintf("corrupted tree: invalid node range %d+%d greater than file size %d\n", offset, length, len(p.data))
+		fmt.Print(msg)
+		panicWithStack(msg)
 	}
 	return p.data[offset : offset+length]
 }
@@ -320,7 +331,7 @@ func (p *MegaPool) flushRange(start, length int64) error {
 	end := start + length
 	err := unix.Msync(p.data[alignedStart:end], unix.MS_SYNC)
 	if err != nil {
-		panic(err)
+		panicWithStack(err)
 	}
 	return nil
 }
@@ -332,12 +343,12 @@ func (p *MegaPool) copyNode(offset int64) (int64, error) {
 	nodeSize := int64(unsafe.Sizeof(MegaNode{}))
 	newOffset, err := p.alloc(nodeSize)
 	if err != nil {
-		panic(err)
+		panicWithStack(err)
 	}
 
 	src := p.nodeAt(offset)
 	if src == nil {
-		panic(fmt.Errorf("copyNode: invalid offset %d", offset))
+		panicWithStack(fmt.Errorf("copyNode: invalid offset %d", offset))
 	}
 	// dst is uninitialized, so we cannot use nodeAt (which checks consistency)
 	dst := (*MegaNode)(unsafe.Pointer(&p.data[newOffset]))
@@ -364,28 +375,28 @@ func (p *MegaPool) Put(key, value []byte) error {
 	if len(key) > 0 {
 		keyOffset, err = p.insertData(key)
 		if err != nil {
-			panic(err)
+			panicWithStack(err)
 		}
 	}
 	valOffset := int64(-1)
 	if len(value) > 0 {
 		valOffset, err = p.insertData(value)
 		if err != nil {
-			panic(err)
+			panicWithStack(err)
 		}
 	}
 
 	// Insert into tree using COW
 	root, err := p.insert(p.header.BtreeRoot, key, keyOffset, valOffset, int64(len(key)), int64(len(value)))
 	if err != nil {
-		panic(err)
+		panicWithStack(err)
 	}
 
 	// Flush new data
 	endSync := p.header.StartFree
 	if endSync > startSync {
 		if err := p.flushRange(startSync, endSync-startSync); err != nil {
-			panic(err)
+			panicWithStack(err)
 		}
 	}
 
@@ -393,7 +404,7 @@ func (p *MegaPool) Put(key, value []byte) error {
 
 	// Flush header
 	if err := p.flushRange(0, MegaHeaderSize); err != nil {
-		panic(err)
+		panicWithStack(err)
 	}
 	return nil
 }
@@ -446,7 +457,7 @@ func (p *MegaPool) enforceBounds(nodeOffset int64) error {
 
 	if node.Bumper != ^node.BumperL {
 		fmt.Printf("corrupted tree: bumper mismatch at %d\n", nodeOffset)
-		panic("corrupted tree: bumper mismatch")
+		panicWithStack("corrupted tree: bumper mismatch")
 	}
 	return nil
 }
@@ -459,7 +470,7 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 		nodeSize := int64(unsafe.Sizeof(MegaNode{}))
 		newOffset, err := p.alloc(nodeSize)
 		if err != nil {
-			panic(err)
+			panicWithStack(err)
 		}
 
 		node := (*MegaNode)(unsafe.Pointer(&p.data[newOffset]))
@@ -481,12 +492,12 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 	// Copy node (COW)
 	myOffset, err := p.copyNode(nodeOffset)
 	if err != nil {
-		panic(err)
+		panicWithStack(err)
 	}
 
 	node := p.nodeAt(myOffset)
 	if node == nil {
-		panic("corrupted tree: invalid node at offset " + strconv.FormatInt(myOffset, 10))
+		panicWithStack("corrupted tree: invalid node at offset " + strconv.FormatInt(myOffset, 10))
 	}
 
 	nodeKey := p.readBytes(node.KeyOffset, node.KeyLen)
@@ -495,7 +506,7 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 	if cmp < 0 {
 		left, err := p.insert(node.Left, key, keyOff, valOff, keyLen, valLen)
 		if err != nil {
-			panic(err)
+			panicWithStack(err)
 		}
 		// Refetch myOffset
 		p.nodeAt(myOffset).Left = left
@@ -506,7 +517,7 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 	} else if cmp > 0 {
 		right, err := p.insert(node.Right, key, keyOff, valOff, keyLen, valLen)
 		if err != nil {
-			panic(err)
+			panicWithStack(err)
 		}
 		// Refetch myOffset
 		p.nodeAt(myOffset).Right = right
@@ -576,7 +587,7 @@ func (p *MegaPool) search(nodeOffset int64, key []byte, depth int) int64 {
 	fmt.Printf("search %d depth %d\n", nodeOffset, depth)
 	defer fmt.Printf("search %d depth %d DONE\n", nodeOffset, depth)
 	if depth > MaxDepth {
-		panic("MegaPool cycle detected or tree too deep")
+		panicWithStack("MegaPool cycle detected or tree too deep")
 	}
 	if nodeOffset < 1 {
 		return 0
@@ -640,7 +651,7 @@ func (p *MegaPool) flush() error {
 	// Actually, simple way:
 	// Use unix.Msync
 	if err := unix.Msync(p.data, unix.MS_SYNC); err != nil {
-		panic(err)
+		panicWithStack(err)
 	}
 	return nil
 }
@@ -657,7 +668,7 @@ func (p *MegaPool) MapFunc(f func([]byte, []byte) error) (map[string]bool, error
 			return nil, err
 		}
 		if err := f(key, val); err != nil {
-			panic(err)
+			panicWithStack(err)
 		}
 		processed[string(key)] = true
 	}
@@ -675,7 +686,7 @@ func (p *MegaPool) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (m
 				return nil, err
 			}
 			if err := f(key, val); err != nil {
-				panic(err)
+				panicWithStack(err)
 			}
 			processed[string(key)] = true
 		}
@@ -738,12 +749,12 @@ func (p *MegaPool) iterate(nodeOffset int64, f func([]byte, []byte) error) error
 	p.enforceBounds(nodeOffset)
 	node := p.nodeAt(nodeOffset)
 	if node == nil {
-		panic("invalid node offset in iteration")
+		panicWithStack("invalid node offset in iteration")
 	}
 
 	// Left
 	if err := p.iterate(node.Left, f); err != nil {
-		panic(err)
+		panicWithStack(err)
 	}
 
 	// Current
@@ -755,12 +766,12 @@ func (p *MegaPool) iterate(nodeOffset int64, f func([]byte, []byte) error) error
 		val = p.readBytes(node.DataOffset, node.DataLen)
 	}
 	if err := f(key, val); err != nil {
-		panic(err)
+		panicWithStack(err)
 	}
 
 	// Right
 	if err := p.iterate(node.Right, f); err != nil {
-		panic(err)
+		panicWithStack(err)
 	}
 
 	return nil
@@ -776,21 +787,21 @@ func (p *MegaPool) Delete(key []byte) error {
 	startSync := p.header.StartFree
 	root, err := p.deleteNode(p.header.BtreeRoot, key)
 	if err != nil {
-		panic(err)
+		panicWithStack(err)
 	}
 
 	// Flush new data
 	endSync := p.header.StartFree
 	if endSync > startSync {
 		if err := p.flushRange(startSync, endSync-startSync); err != nil {
-			panic(err)
+			panicWithStack(err)
 		}
 	}
 
 	p.header.BtreeRoot = root
 	// Flush header
 	if err := p.flushRange(0, MegaHeaderSize); err != nil {
-		panic(err)
+		panicWithStack(err)
 	}
 	return nil
 }
@@ -803,7 +814,7 @@ func (p *MegaPool) deleteNode(nodeOffset int64, key []byte) (int64, error) {
 	// Copy node (COW)
 	myOffset, err := p.copyNode(nodeOffset)
 	if err != nil {
-		panic(err)
+		panicWithStack(err)
 	}
 	node := p.nodeAt(myOffset) // Safe
 
@@ -813,13 +824,13 @@ func (p *MegaPool) deleteNode(nodeOffset int64, key []byte) (int64, error) {
 	if cmp < 0 {
 		left, err := p.deleteNode(node.Left, key)
 		if err != nil {
-			panic(err)
+			panicWithStack(err)
 		}
 		p.nodeAt(myOffset).Left = left
 	} else if cmp > 0 {
 		right, err := p.deleteNode(node.Right, key)
 		if err != nil {
-			panic(err)
+			panicWithStack(err)
 		}
 		p.nodeAt(myOffset).Right = right
 	} else {
@@ -851,7 +862,7 @@ func (p *MegaPool) deleteNode(nodeOffset int64, key []byte) (int64, error) {
 		// Delete the inorder successor
 		right, err := p.deleteNode(node.Right, minRightKey)
 		if err != nil {
-			panic(err)
+			panicWithStack(err)
 		}
 		p.nodeAt(myOffset).Right = right
 	}
