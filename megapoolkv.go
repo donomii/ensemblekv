@@ -61,7 +61,7 @@ func OpenMegaPool(path string, size int64) (*MegaPool, error) {
 	info, err := f.Stat()
 	if err != nil {
 		f.Close()
-		return nil, err
+		panic(err)
 	}
 	fileSize := info.Size()
 
@@ -76,7 +76,7 @@ func OpenMegaPool(path string, size int64) (*MegaPool, error) {
 			// Resize (grow) if requested size is larger.
 			if err := f.Truncate(size); err != nil {
 				f.Close()
-				return nil, err
+				panic(err)
 			}
 			fileSize = size
 		} else {
@@ -88,7 +88,7 @@ func OpenMegaPool(path string, size int64) (*MegaPool, error) {
 		size = 1 * 1024 * 1024 // 1MB default
 		if err := f.Truncate(size); err != nil {
 			f.Close()
-			return nil, err
+			panic(err)
 		}
 		fileSize = size
 	} else if size == 0 {
@@ -99,7 +99,7 @@ func OpenMegaPool(path string, size int64) (*MegaPool, error) {
 	data, err := unix.Mmap(int(f.Fd()), 0, int(fileSize), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
 	if err != nil {
 		f.Close()
-		return nil, fmt.Errorf("mmap failed: %v", err)
+		panic(fmt.Errorf("mmap failed: %v", err))
 	}
 
 	pool := &MegaPool{
@@ -119,7 +119,7 @@ func OpenMegaPool(path string, size int64) (*MegaPool, error) {
 	} else {
 		if pool.header.Magic != MegaMagic {
 			pool.Close()
-			return nil, fmt.Errorf("invalid magic number: expected %x, got %x", MegaMagic, pool.header.Magic)
+			panic(fmt.Errorf("invalid magic number: expected %x, got %x", MegaMagic, pool.header.Magic))
 		}
 	}
 
@@ -132,16 +132,18 @@ func (p *MegaPool) Close() error {
 	defer func() { fmt.Printf("MegaPool(%p).Close: unlocking\n", p); p.mu.Unlock() }()
 
 	if err := p.flush(); err != nil {
-		return err
+		panic(err)
 	}
 	if p.data != nil {
 		if err := unix.Munmap(p.data); err != nil {
-			return err
+			panic(err)
 		}
 		p.data = nil
 	}
 	if p.file != nil {
-		return p.file.Close()
+		if err := p.file.Close(); err != nil {
+			panic(err)
+		}
 	}
 	return nil
 }
@@ -189,7 +191,7 @@ func (p *MegaPool) alloc(size int64) (int64, error) {
 		}
 
 		if err := p.resize(newFileSize); err != nil {
-			return 0, fmt.Errorf("failed to resize pool: %v", err)
+			panic(fmt.Errorf("failed to resize pool: %v", err))
 		}
 	}
 
@@ -250,7 +252,7 @@ func (p *MegaPool) insertData(data []byte) (int64, error) {
 	l := int64(len(data))
 	offset, err := p.alloc(l)
 	if err != nil {
-		return 0, err
+		panic(err)
 	}
 
 	copy(p.data[offset:], data)
@@ -316,7 +318,11 @@ func (p *MegaPool) flushRange(start, length int64) error {
 	pageSize := int64(os.Getpagesize())
 	alignedStart := (start / pageSize) * pageSize
 	end := start + length
-	return unix.Msync(p.data[alignedStart:end], unix.MS_SYNC)
+	err := unix.Msync(p.data[alignedStart:end], unix.MS_SYNC)
+	if err != nil {
+		panic(err)
+	}
+	return nil
 }
 
 func (p *MegaPool) copyNode(offset int64) (int64, error) {
@@ -326,12 +332,12 @@ func (p *MegaPool) copyNode(offset int64) (int64, error) {
 	nodeSize := int64(unsafe.Sizeof(MegaNode{}))
 	newOffset, err := p.alloc(nodeSize)
 	if err != nil {
-		return 0, err
+		panic(err)
 	}
 
 	src := p.nodeAt(offset)
 	if src == nil {
-		return 0, fmt.Errorf("copyNode: invalid offset %d", offset)
+		panic(fmt.Errorf("copyNode: invalid offset %d", offset))
 	}
 	// dst is uninitialized, so we cannot use nodeAt (which checks consistency)
 	dst := (*MegaNode)(unsafe.Pointer(&p.data[newOffset]))
@@ -358,28 +364,28 @@ func (p *MegaPool) Put(key, value []byte) error {
 	if len(key) > 0 {
 		keyOffset, err = p.insertData(key)
 		if err != nil {
-			return err
+			panic(err)
 		}
 	}
 	valOffset := int64(-1)
 	if len(value) > 0 {
 		valOffset, err = p.insertData(value)
 		if err != nil {
-			return err
+			panic(err)
 		}
 	}
 
 	// Insert into tree using COW
 	root, err := p.insert(p.header.BtreeRoot, key, keyOffset, valOffset, int64(len(key)), int64(len(value)))
 	if err != nil {
-		return err
+		panic(err)
 	}
 
 	// Flush new data
 	endSync := p.header.StartFree
 	if endSync > startSync {
 		if err := p.flushRange(startSync, endSync-startSync); err != nil {
-			return err
+			panic(err)
 		}
 	}
 
@@ -387,7 +393,7 @@ func (p *MegaPool) Put(key, value []byte) error {
 
 	// Flush header
 	if err := p.flushRange(0, MegaHeaderSize); err != nil {
-		return err
+		panic(err)
 	}
 	return nil
 }
@@ -453,7 +459,7 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 		nodeSize := int64(unsafe.Sizeof(MegaNode{}))
 		newOffset, err := p.alloc(nodeSize)
 		if err != nil {
-			return 0, err
+			panic(err)
 		}
 
 		node := (*MegaNode)(unsafe.Pointer(&p.data[newOffset]))
@@ -475,12 +481,12 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 	// Copy node (COW)
 	myOffset, err := p.copyNode(nodeOffset)
 	if err != nil {
-		return 0, err
+		panic(err)
 	}
 
 	node := p.nodeAt(myOffset)
 	if node == nil {
-		return 0, errors.New("corrupted tree: invalid node at offset " + strconv.FormatInt(myOffset, 10))
+		panic("corrupted tree: invalid node at offset " + strconv.FormatInt(myOffset, 10))
 	}
 
 	nodeKey := p.readBytes(node.KeyOffset, node.KeyLen)
@@ -489,7 +495,7 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 	if cmp < 0 {
 		left, err := p.insert(node.Left, key, keyOff, valOff, keyLen, valLen)
 		if err != nil {
-			return 0, err
+			panic(err)
 		}
 		// Refetch myOffset
 		p.nodeAt(myOffset).Left = left
@@ -500,7 +506,7 @@ func (p *MegaPool) insert(nodeOffset int64, key []byte, keyOff, valOff, keyLen, 
 	} else if cmp > 0 {
 		right, err := p.insert(node.Right, key, keyOff, valOff, keyLen, valLen)
 		if err != nil {
-			return 0, err
+			panic(err)
 		}
 		// Refetch myOffset
 		p.nodeAt(myOffset).Right = right
@@ -633,7 +639,10 @@ func (p *MegaPool) flush() error {
 	// Use the specific MS_SYNC flag constants if needed, but for now, rely on OS or implementing a specific helper.
 	// Actually, simple way:
 	// Use unix.Msync
-	return unix.Msync(p.data, unix.MS_SYNC)
+	if err := unix.Msync(p.data, unix.MS_SYNC); err != nil {
+		panic(err)
+	}
+	return nil
 }
 
 // MapFunc applies a function to all key-value pairs.
@@ -648,7 +657,7 @@ func (p *MegaPool) MapFunc(f func([]byte, []byte) error) (map[string]bool, error
 			return nil, err
 		}
 		if err := f(key, val); err != nil {
-			return nil, err
+			panic(err)
 		}
 		processed[string(key)] = true
 	}
@@ -666,7 +675,7 @@ func (p *MegaPool) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (m
 				return nil, err
 			}
 			if err := f(key, val); err != nil {
-				return nil, err
+				panic(err)
 			}
 			processed[string(key)] = true
 		}
@@ -729,12 +738,12 @@ func (p *MegaPool) iterate(nodeOffset int64, f func([]byte, []byte) error) error
 	p.enforceBounds(nodeOffset)
 	node := p.nodeAt(nodeOffset)
 	if node == nil {
-		return errors.New("invalid node offset in iteration")
+		panic("invalid node offset in iteration")
 	}
 
 	// Left
 	if err := p.iterate(node.Left, f); err != nil {
-		return err
+		panic(err)
 	}
 
 	// Current
@@ -746,12 +755,12 @@ func (p *MegaPool) iterate(nodeOffset int64, f func([]byte, []byte) error) error
 		val = p.readBytes(node.DataOffset, node.DataLen)
 	}
 	if err := f(key, val); err != nil {
-		return err
+		panic(err)
 	}
 
 	// Right
 	if err := p.iterate(node.Right, f); err != nil {
-		return err
+		panic(err)
 	}
 
 	return nil
@@ -767,21 +776,21 @@ func (p *MegaPool) Delete(key []byte) error {
 	startSync := p.header.StartFree
 	root, err := p.deleteNode(p.header.BtreeRoot, key)
 	if err != nil {
-		return err
+		panic(err)
 	}
 
 	// Flush new data
 	endSync := p.header.StartFree
 	if endSync > startSync {
 		if err := p.flushRange(startSync, endSync-startSync); err != nil {
-			return err
+			panic(err)
 		}
 	}
 
 	p.header.BtreeRoot = root
 	// Flush header
 	if err := p.flushRange(0, MegaHeaderSize); err != nil {
-		return err
+		panic(err)
 	}
 	return nil
 }
@@ -794,7 +803,7 @@ func (p *MegaPool) deleteNode(nodeOffset int64, key []byte) (int64, error) {
 	// Copy node (COW)
 	myOffset, err := p.copyNode(nodeOffset)
 	if err != nil {
-		return 0, err
+		panic(err)
 	}
 	node := p.nodeAt(myOffset) // Safe
 
@@ -804,71 +813,55 @@ func (p *MegaPool) deleteNode(nodeOffset int64, key []byte) (int64, error) {
 	if cmp < 0 {
 		left, err := p.deleteNode(node.Left, key)
 		if err != nil {
-			return 0, err
+			panic(err)
 		}
 		p.nodeAt(myOffset).Left = left
-		return myOffset, nil
 	} else if cmp > 0 {
 		right, err := p.deleteNode(node.Right, key)
 		if err != nil {
-			return 0, err
+			panic(err)
 		}
 		p.nodeAt(myOffset).Right = right
-		return myOffset, nil
 	} else {
-		// Found node to delete
-		// Case 1: No children
-		if node.Left == 0 && node.Right == 0 {
-			return 0, nil
-		}
-		// Case 2: One child
+		// Found the node to delete
 		if node.Left == 0 {
 			return node.Right, nil
-		}
-		if node.Right == 0 {
+		} else if node.Right == 0 {
 			return node.Left, nil
 		}
 
-		// Case 3: Two children
-		// Find successor (min in right subtree)
-		successor, _ := p.findMin(node.Right)
-		if successor == nil {
-			return 0, errors.New("corrupt tree: could not find successor")
-		}
+		// Node with two children: Get the inorder successor (smallest in the right subtree)
+		minRight := p.minNode(node.Right)
+		minRightKey := p.readBytes(minRight.KeyOffset, minRight.KeyLen)
+		minRightVal := p.readBytes(minRight.DataOffset, minRight.DataLen)
 
-		// Read successor key/data
-		succKey := p.readBytes(successor.KeyOffset, successor.KeyLen)
+		// Copy data to current node
+		// Actually, we should probably just update offsets if we wanted to be pure COW,
+		// but since we already copied the node, we can modify it.
+		// Wait, minRight pointers might be invalid if we just copy struct?
+		// No, we just need key and value.
+		// But in this implementation, key/value are just offsets.
+		// So we can copy offsets.
+		n := p.nodeAt(myOffset)
+		n.KeyOffset = minRight.KeyOffset
+		n.KeyLen = minRight.KeyLen
+		n.DataOffset = minRight.DataOffset
+		n.DataLen = minRight.DataLen
 
-		// Copy key/data offsets from successor to current node
-		node.KeyOffset = successor.KeyOffset
-		node.KeyLen = successor.KeyLen
-		node.DataOffset = successor.DataOffset
-		node.DataLen = successor.DataLen
-
-		// We need a copy of succKey because we are about to traverse the tree where it lives
-		keyCopy := make([]byte, len(succKey))
-		copy(keyCopy, succKey)
-
-		// Delete successor from right subtree
-		newRight, err := p.deleteNode(node.Right, keyCopy)
+		// Delete the inorder successor
+		right, err := p.deleteNode(node.Right, minRightKey)
 		if err != nil {
-			return 0, err
+			panic(err)
 		}
-		node.Right = newRight
-		return nodeOffset, nil
+		p.nodeAt(myOffset).Right = right
 	}
+	return myOffset, nil
 }
 
-func (p *MegaPool) findMin(nodeOffset int64) (*MegaNode, int64) {
-	if nodeOffset == 0 {
-		return nil, 0
+func (p *MegaPool) minNode(nodeOffset int64) *MegaNode {
+	current := p.nodeAt(nodeOffset)
+	for current.Left != 0 {
+		current = p.nodeAt(current.Left)
 	}
-	node := p.nodeAt(nodeOffset)
-	if node == nil {
-		return nil, 0
-	}
-	if node.Left == 0 {
-		return node, nodeOffset
-	}
-	return p.findMin(node.Left)
+	return current
 }
