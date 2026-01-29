@@ -16,6 +16,7 @@ import (
 const (
 	MegaMagic      = 0x4D504B56 // "MPKV"
 	MegaHeaderSize = 256        // Fixed header size
+	MaxDepth       = 10000
 )
 
 // MegaHeader represents the fixed-size header at the start of the file.
@@ -458,7 +459,7 @@ func (p *MegaPool) Get(key []byte) ([]byte, error) {
 }
 
 func (p *MegaPool) get(key []byte) ([]byte, error) {
-	nodeOffset := p.search(p.header.BtreeRoot, key)
+	nodeOffset := p.search(p.header.BtreeRoot, key, 0)
 	if nodeOffset < 1 {
 		return nil, os.ErrNotExist // Not found
 	}
@@ -475,7 +476,10 @@ func (p *MegaPool) get(key []byte) ([]byte, error) {
 	return out, nil
 }
 
-func (p *MegaPool) search(nodeOffset int64, key []byte) int64 {
+func (p *MegaPool) search(nodeOffset int64, key []byte, depth int) int64 {
+	if depth > MaxDepth {
+		panic("MegaPool cycle detected or tree too deep")
+	}
 	if nodeOffset < 1 {
 		return 0
 	}
@@ -495,9 +499,9 @@ func (p *MegaPool) search(nodeOffset int64, key []byte) int64 {
 	cmp := bytes.Compare(key, nodeKey)
 
 	if cmp < 0 {
-		return p.search(node.Left, key)
+		return p.search(node.Left, key, depth+1)
 	} else if cmp > 0 {
-		return p.search(node.Right, key)
+		return p.search(node.Right, key, depth+1)
 	} else {
 		return nodeOffset
 	}
@@ -508,7 +512,7 @@ func (p *MegaPool) Exists(key []byte) bool {
 	fmt.Printf("MegaPool(%p).Exists: rlocking\n", p)
 	p.mu.RLock()
 	defer func() { fmt.Printf("MegaPool(%p).Exists: runlocking\n", p); p.mu.RUnlock() }()
-	return p.search(p.header.BtreeRoot, key) != 0
+	return p.search(p.header.BtreeRoot, key, 0) != 0
 }
 
 // Size returns the total size of the pool file.
