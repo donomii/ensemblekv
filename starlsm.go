@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -35,6 +36,10 @@ func NewStarLSM(
 	fileSize int64,
 	createStore CreatorFunc,
 ) (*StarLSM, error) {
+	return newStarLSM(directory, blockSize, fileSize, createStore, nil, "", 0)
+}
+
+func newStarLSM(directory string, blockSize, fileSize int64, createStore CreatorFunc, parent *StarLSM, prefix string, depth int64) (*StarLSM, error) {
 	store := &StarLSM{
 		directory:   directory,
 		subStores:   make(map[string]*StarLSM),
@@ -42,7 +47,9 @@ func NewStarLSM(
 		blockSize:   blockSize,
 		fileSize:    fileSize,
 		hashFunc:    defaultHashFunc,
-		depth:       0,
+		parent:      parent,
+		prefix:      prefix,
+		depth:       depth,
 	}
 
 	if err := os.MkdirAll(directory, 0755); err != nil {
@@ -60,6 +67,7 @@ func NewStarLSM(
 	if err := store.loadSubStores(); err != nil {
 		return nil, fmt.Errorf("failed to load substores: %w", err)
 	}
+	store.isReadOnly = len(store.subStores) > 0
 
 	return store, nil
 }
@@ -122,6 +130,9 @@ func (s *StarLSM) Keys() [][]byte {
 	defer s.mutex.RUnlock()
 
 	var keys [][]byte
+	if !s.isReadOnly {
+		return s.currentStore.Keys()
+	}
 	for _, subStore := range s.subStores {
 		subKeys := subStore.Keys()
 		keys = append(keys, subKeys...)
@@ -133,7 +144,10 @@ func (s *StarLSM) Keys() [][]byte {
 func (s *StarLSM) Put(key, value []byte) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	return s.put(key, value)
+}
 
+func (s *StarLSM) put(key, value []byte) error {
 	hashedKey := s.hashKey(key)
 
 	if s.isReadOnly {
@@ -151,7 +165,7 @@ func (s *StarLSM) Put(key, value []byte) error {
 			return fmt.Errorf("failed to split store: %w", err)
 		}
 		// After splitting, we're read-only, so recursively put
-		return s.Put(key, value)
+		return s.put(key, value)
 	}
 
 	return s.currentStore.Put(key, value)
@@ -159,6 +173,9 @@ func (s *StarLSM) Put(key, value []byte) error {
 
 // split creates substores for the next level of hash precision
 func (s *StarLSM) split(hashedKey string) error {
+	if s.depth >= 16 {
+		return fmt.Errorf("cannot split store %q beyond the 16-character hash", s.directory)
+	}
 	nextDepth := s.depth + 1
 
 	// Create subdirectories for each hex character at this depth
@@ -166,14 +183,11 @@ func (s *StarLSM) split(hashedKey string) error {
 		prefix := fmt.Sprintf("%s%x", s.prefix, i)
 		subDir := filepath.Join(s.directory, fmt.Sprintf("%x", i))
 
-		subStore, err := NewStarLSM(subDir, s.blockSize, s.fileSize, s.createStore)
+		subStore, err := newStarLSM(subDir, s.blockSize, s.fileSize, s.createStore, s, prefix, nextDepth)
 		if err != nil {
 			return fmt.Errorf("failed to create substore %s: %w", prefix, err)
 		}
 
-		subStore.prefix = prefix
-		subStore.parent = s
-		subStore.depth = nextDepth
 		s.subStores[prefix] = subStore
 	}
 
@@ -203,21 +217,13 @@ func (s *StarLSM) Get(key []byte) ([]byte, error) {
 	// Check substores first if they exist
 	prefix := s.getPrefixAtDepth(hashedKey, s.depth)
 	if subStore, exists := s.subStores[prefix]; exists {
-		value, err := subStore.Get(key)
-		if err == nil {
-			return value, nil
-		}
+		return subStore.Get(key)
 	}
 
 	// Then check current store
 	value, err := s.currentStore.Get(key)
 	if err == nil {
 		return value, nil
-	}
-
-	// Finally check parent if we have one
-	if s.parent != nil {
-		return s.parent.Get(key)
 	}
 
 	return nil, fmt.Errorf("key not found")
@@ -252,19 +258,12 @@ func (s *StarLSM) Exists(key []byte) bool {
 	// Check substores first
 	prefix := s.getPrefixAtDepth(hashedKey, s.depth)
 	if subStore, exists := s.subStores[prefix]; exists {
-		if subStore.Exists(key) {
-			return true
-		}
+		return subStore.Exists(key)
 	}
 
 	// Then current store
 	if s.currentStore.Exists(key) {
 		return true
-	}
-
-	// Finally parent
-	if s.parent != nil {
-		return s.parent.Exists(key)
 	}
 
 	return false
@@ -279,20 +278,20 @@ func (s *StarLSM) loadSubStores() error {
 
 	for _, entry := range entries {
 		if entry.IsDir() && len(entry.Name()) == 1 && isHexString(entry.Name()) {
-			subStore, err := NewStarLSM(
+			prefix := s.prefix + entry.Name()
+			subStore, err := newStarLSM(
 				filepath.Join(s.directory, entry.Name()),
 				s.blockSize,
 				s.fileSize,
 				s.createStore,
+				s,
+				prefix,
+				s.depth+1,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to load substore %s: %w", entry.Name(), err)
 			}
 
-			prefix := s.prefix + entry.Name()
-			subStore.prefix = prefix
-			subStore.parent = s
-			subStore.depth = s.depth + 1
 			s.subStores[prefix] = subStore
 		}
 	}
@@ -353,24 +352,15 @@ func (s *StarLSM) Size() int64 {
 
 // MapFunc applies a function to all key-value pairs
 func (s *StarLSM) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-
-	// Start with current store
-	visited, err := s.currentStore.MapFunc(f)
-	if err != nil {
-		return nil, err
-	}
-
-	// Then process substores
-	for _, subStore := range s.subStores {
-		subVisited, err := subStore.MapFunc(f)
+	visited := make(map[string]bool)
+	for _, key := range s.Keys() {
+		value, err := s.Get(key)
 		if err != nil {
-			return nil, err
+			return visited, err
 		}
-		// Merge visited maps
-		for k, v := range subVisited {
-			visited[k] = v
+		visited[string(key)] = true
+		if err := f(key, value); err != nil {
+			return visited, err
 		}
 	}
 
@@ -378,31 +368,14 @@ func (s *StarLSM) MapFunc(f func([]byte, []byte) error) (map[string]bool, error)
 }
 
 func (s *StarLSM) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-
 	keys := make(map[string]bool)
-
-	// Start with current store
-	subKeys, err := s.currentStore.MapPrefixFunc(prefix, f)
-	if err != nil {
-		return keys, err
-	}
-	for k, v := range subKeys {
-		keys[k] = v
-	}
-
-	// Then process substores
-	for _, subStore := range s.subStores {
-		subKeys, err := subStore.MapPrefixFunc(prefix, f)
-		if err != nil {
-			return keys, err
+	_, err := s.MapFunc(func(key, value []byte) error {
+		if strings.HasPrefix(string(key), string(prefix)) {
+			keys[string(key)] = true
+			return f(key, value)
 		}
-		// Merge visited maps
-		for k, v := range subKeys {
-			keys[k] = v
-		}
-	}
+		return nil
+	})
 
-	return keys, nil
+	return keys, err
 }

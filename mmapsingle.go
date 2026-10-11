@@ -315,21 +315,13 @@ func (kv *MmapSingleKV) Flush() error {
 	kv.mutex.Lock()
 	defer kv.mutex.Unlock()
 
-	// Only sync a small region around recent writes for performance
-	// This is safe because we use MAP_SHARED
 	if kv.offset > 0 {
-		// Sync only the last 1MB or the used region, whichever is smaller
-		syncStart := int64(0)
-		if kv.offset > 1024*1024 {
-			syncStart = kv.offset - 1024*1024
-		}
-		syncRegion := kv.data[syncStart:kv.offset]
-		if err := unix.Msync(syncRegion, unix.MS_ASYNC); err != nil {
+		if err := unix.Msync(kv.data[:kv.offset], unix.MS_SYNC); err != nil {
 			return fmt.Errorf("failed to msync: %w", err)
 		}
 	}
 
-	return nil
+	return kv.file.Sync()
 }
 
 func (kv *MmapSingleKV) Close() error {
