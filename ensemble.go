@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	_ "log"
@@ -68,7 +69,10 @@ type EnsembleKv struct {
 
 	compactMu        sync.Mutex
 	substoreLocks    *syncmap.SyncMap[int, *sync.Mutex]
-	compactingStores *syncmap.SyncMap[int, KvLike]
+	compactingStores *syncmap.SyncMap[int, *compactionState]
+	unavailable      *syncmap.SyncMap[int, error]
+	stopWorker       chan struct{}
+	workerDone       chan struct{}
 }
 
 func NewEnsembleKv(directory string, N, maxBlock, maxKeys, filesie int64, createStore CreatorFunc) (*EnsembleKv, error) {
@@ -83,7 +87,10 @@ func NewEnsembleKv(directory string, N, maxBlock, maxKeys, filesie int64, create
 		substores:        syncmap.NewSyncMap[int, KvLike](),
 		flushStore:       syncmap.NewSyncMap[int, bool](),
 		substoreLocks:    syncmap.NewSyncMap[int, *sync.Mutex](),
-		compactingStores: syncmap.NewSyncMap[int, KvLike](),
+		compactingStores: syncmap.NewSyncMap[int, *compactionState](),
+		unavailable:      syncmap.NewSyncMap[int, error](),
+		stopWorker:       make(chan struct{}),
+		workerDone:       make(chan struct{}),
 	}
 
 	if err := os.MkdirAll(directory, os.ModePerm); err != nil {
@@ -95,37 +102,49 @@ func NewEnsembleKv(directory string, N, maxBlock, maxKeys, filesie int64, create
 		return nil, err
 	}
 
+	if store.N <= 0 {
+		return nil, fmt.Errorf("Ensemble substore count must be positive, received %d", store.N)
+	}
 	if err := store.setup(); err != nil {
-		return nil, err
+		return nil, errors.Join(err, store.closeSubstores())
+	}
+	if err := store.saveMetadata(); err != nil {
+		return nil, errors.Join(err, store.closeSubstores())
 	}
 
-	store.saveMetadata()
-
-	go store.flushWorker()
 	store.running.Store(true)
+	go store.flushWorker()
 
 	return store, nil
 }
 
 func (s *EnsembleKv) flushWorker() {
 	// Periodically flush the substores to disk
+	defer close(s.workerDone)
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
 	for {
-		time.Sleep(10 * time.Second)
-		if !s.running.Load() {
-			continue
-		}
-		s.flushStore.Range(func(i int, needsFlush bool) bool {
-			if needsFlush {
-				if substore, ok := s.substores.Load(i); ok {
-					if err := substore.Flush(); err != nil {
-						fmt.Printf("Error flushing substore %d: %v\n", i, err)
-					} else {
-						s.flushStore.Store(i, false)
+		select {
+		case <-s.stopWorker:
+			return
+		case <-ticker.C:
+			s.flushStore.Range(func(id int, _ bool) bool {
+				err := s.runInSubstoreWithErr(id, func(substore KvLike) error {
+					if dirty, _ := s.flushStore.Load(id); !dirty {
+						return nil
 					}
+					if err := substore.Flush(); err != nil {
+						return err
+					}
+					s.flushStore.Store(id, false)
+					return nil
+				})
+				if err != nil && s.running.Load() {
+					logEnsembleFlushError(id, err)
 				}
-			}
-			return true
-		})
+				return true
+			})
+		}
 	}
 }
 
@@ -141,35 +160,8 @@ func (s *EnsembleKv) setup() error {
 		subPath := filepath.Join(genPath, fmt.Sprintf("%d", i))
 
 		// Cleanup logic for interrupted compactions
-		compactPath := subPath + ".compacting"
-		oldPath := subPath + ".old"
-
-		if _, err := os.Stat(compactPath); err == nil {
-			os.RemoveAll(compactPath)
-		}
-
-		if _, err := os.Stat(oldPath); err == nil {
-			// Check if primary exists and can be opened
-			primaryExists := false
-			if _, err := os.Stat(subPath); err == nil {
-				primaryExists = true
-			}
-
-			if primaryExists {
-				// Try to open it
-				testStore, err := s.createStore(subPath, s.maxBlock, s.filesize)
-				if err == nil {
-					testStore.Close()
-					os.RemoveAll(oldPath)
-				} else {
-					// Primary exists but is broken, revert from old
-					os.RemoveAll(subPath)
-					os.Rename(oldPath, subPath)
-				}
-			} else {
-				// Primary does not exist, revert from old
-				os.Rename(oldPath, subPath)
-			}
+		if err := s.recoverCompaction(subPath); err != nil {
+			return fmt.Errorf("recover substore %d: %w", i, err)
 		}
 
 		substore, err := s.createStore(subPath, s.maxBlock, s.filesize)
@@ -208,6 +200,12 @@ func (s *EnsembleKv) runInSubstore(id int, f func(substore KvLike)) bool {
 	}
 	lock.Lock()
 	defer lock.Unlock()
+	if !s.running.Load() {
+		return false
+	}
+	if _, failed := s.unavailable.Load(id); failed {
+		return false
+	}
 	if substore, ok := s.substores.Load(id); ok {
 		f(substore)
 		return true
@@ -222,6 +220,12 @@ func (s *EnsembleKv) runInSubstoreWithErr(id int, f func(substore KvLike) error)
 	}
 	lock.Lock()
 	defer lock.Unlock()
+	if !s.running.Load() {
+		return fmt.Errorf("store is closed")
+	}
+	if err, failed := s.unavailable.Load(id); failed {
+		return fmt.Errorf("substore %d is unavailable: %w", id, err)
+	}
 	if substore, ok := s.substores.Load(id); ok {
 		return f(substore)
 	}
@@ -327,20 +331,22 @@ func (s *EnsembleKv) Put(key []byte, val []byte) error {
 	index := s.hashToIndex(hash)
 
 	return s.runInSubstoreWithErr(index, func(substore KvLike) error {
+		state, compacting := s.compactingStores.Load(index)
 		if err := substore.Put(key, val); err != nil {
+			if compacting {
+				state.failure = errors.Join(state.failure, err)
+			}
 			return err
 		}
-
-		// Dual-write if compacting
-		if compactSide, ok := s.compactingStores.Load(index); ok {
-			if err := compactSide.Put(key, val); err != nil {
-				return fmt.Errorf("dual-write failed for substore %d: %w", index, err)
+		s.flushStore.Store(index, true)
+		s.totalKeys.Add(1)
+		if compacting && state.failure == nil {
+			state.keys[string(key)] = compactionCopied
+			if err := state.target.Put(key, val); err != nil {
+				state.failure = fmt.Errorf("dual-write failed for substore %d, key %x: %w", index, key, err)
+				return state.failure
 			}
 		}
-
-		// Increment total key count
-		s.totalKeys.Add(1)
-		s.flushStore.Store(index, true)
 		return nil
 	})
 }
@@ -355,20 +361,25 @@ func (s *EnsembleKv) Delete(key []byte) error {
 	index := s.hashToIndex(hash)
 
 	return s.runInSubstoreWithErr(index, func(substore KvLike) error {
+		state, compacting := s.compactingStores.Load(index)
 		if err := substore.Delete(key); err != nil {
+			if compacting {
+				state.failure = errors.Join(state.failure, err)
+			}
 			return err
 		}
-
-		// Dual-delete if compacting
-		if compactSide, ok := s.compactingStores.Load(index); ok {
-			if err := compactSide.Delete(key); err != nil {
-				return fmt.Errorf("dual-delete failed for substore %d: %w", index, err)
+		s.flushStore.Store(index, true)
+		s.totalKeys.Add(-1)
+		if compacting && state.failure == nil {
+			previous := state.keys[string(key)]
+			state.keys[string(key)] = compactionDeleted
+			if previous == compactionCopied {
+				if err := state.target.Delete(key); err != nil {
+					state.failure = fmt.Errorf("dual-delete failed for substore %d, key %x: %w", index, key, err)
+					return state.failure
+				}
 			}
 		}
-
-		// Decriment total key count
-		s.totalKeys.Add(-1)
-		s.flushStore.Store(index, true)
 		return nil
 	})
 }
@@ -394,43 +405,46 @@ func (s *EnsembleKv) Flush() error {
 	if !s.running.Load() {
 		return fmt.Errorf("store is closed")
 	}
-
-	var firstErr error
-	var errMu sync.Mutex
-	s.substores.Range(func(i int, substore KvLike) bool {
-		s.runInSubstore(i, func(substore KvLike) {
+	var result error
+	for id := 0; id < int(s.N); id++ {
+		err := s.runInSubstoreWithErr(id, func(substore KvLike) error {
 			if err := substore.Flush(); err != nil {
-				errMu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				errMu.Unlock()
+				return err
 			}
+			s.flushStore.Store(id, false)
+			return nil
 		})
-		return true
-	})
-	return firstErr
+		if err != nil {
+			result = errors.Join(result, fmt.Errorf("flush substore %d: %w", id, err))
+		}
+	}
+	return result
 }
 
 // Close closes all substores.
 func (s *EnsembleKv) Close() error {
-	s.running.Store(false)
+	s.compactMu.Lock()
+	defer s.compactMu.Unlock()
+	if !s.running.Swap(false) {
+		return nil
+	}
+	close(s.stopWorker)
+	<-s.workerDone
+	return s.closeSubstores()
+}
 
-	var firstErr error
-	var errMu sync.Mutex
-	s.substores.Range(func(i int, substore KvLike) bool {
-		s.runInSubstore(i, func(substore KvLike) {
-			if err := substore.Close(); err != nil {
-				errMu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				errMu.Unlock()
-			}
-		})
+func (s *EnsembleKv) closeSubstores() error {
+	var result error
+	s.substores.Range(func(id int, substore KvLike) bool {
+		lock, _ := s.substoreLocks.Load(id)
+		lock.Lock()
+		defer lock.Unlock()
+		if err := substore.Close(); err != nil {
+			result = errors.Join(result, fmt.Errorf("close substore %d: %w", id, err))
+		}
 		return true
 	})
-	return firstErr
+	return result
 }
 
 // Metadata represents the persistent state of the Store.
@@ -548,129 +562,13 @@ func (s *EnsembleKv) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) 
 func (s *EnsembleKv) ConcurrentCompact() error {
 	s.compactMu.Lock()
 	defer s.compactMu.Unlock()
-
-	genPath := filepath.Join(s.directory, fmt.Sprintf("%d", s.generation))
-
-	for i := 0; i < int(s.N); i++ {
-		subPath := filepath.Join(genPath, fmt.Sprintf("%d", i))
-		compactPath := subPath + ".compacting"
-		oldPath := subPath + ".old"
-
-		// Create temporary substore
-		compactStore, err := s.createStore(compactPath, s.maxBlock, s.filesize)
-		if err != nil {
-			return fmt.Errorf("failed to create compact store for substore %d: %w", i, err)
-		}
-
-		// Register compact store for dual-writes
-		var originalStore KvLike
-		err = s.runInSubstoreWithErr(i, func(substore KvLike) error {
-			s.compactingStores.Store(i, compactStore)
-			originalStore = substore
-			return nil
-		})
-		if err != nil {
-			compactStore.Close()
-			return err
-		}
-
-		// Iterate over keys from original store
-		keys := originalStore.Keys()
-		for _, key := range keys {
-			// Check key existence in target store -> exists -> next key
-			if compactStore.Exists(key) {
-				continue
-			}
-
-			// lock both source and target (via the substore lock)
-			copyErr := s.runInSubstoreWithErr(i, func(substore KvLike) error {
-				// check key existence in target store -> exists -> next key
-				if compactStore.Exists(key) {
-					return nil
-				}
-
-				// check key existence in source -> not exists -> next key
-				val, err := substore.Get(key)
-				if err != nil {
-					return nil
-				}
-
-				// copy key and value from source to target
-				if err := compactStore.Put(key, val); err != nil {
-					s.compactingStores.Delete(i)
-					compactStore.Close()
-					os.RemoveAll(compactPath)
-					return fmt.Errorf("compact copy failed for substore %d: %w", i, err)
-				}
-				return nil
-			})
-			if copyErr != nil {
-				return copyErr
-			}
-		}
-
-		// Swap sequence
-		swapErr := s.runInSubstoreWithErr(i, func(substore KvLike) error {
-			// Close both
-			substore.Close()
-			compactStore.Close()
-			s.compactingStores.Delete(i)
-
-			// Rename primary to old
-			if err := os.Rename(subPath, oldPath); err != nil {
-				// Try to restore original state by re-opening (best effort)
-				newOriginal, reOpenErr := s.createStore(subPath, s.maxBlock, s.filesize)
-				if reOpenErr == nil {
-					s.substores.Store(i, newOriginal)
-				}
-				os.RemoveAll(compactPath)
-				if reOpenErr != nil {
-					return fmt.Errorf("failed to rename original substore %d to .old: %v, and failed to re-open original: %w", i, err, reOpenErr)
-				}
-				return fmt.Errorf("failed to rename original substore %d to .old: %w", i, err)
-			}
-
-			// Rename compacting to primary
-			if err := os.Rename(compactPath, subPath); err != nil {
-				// Try to recover original if rename failed
-				os.Rename(oldPath, subPath)
-				newOriginal, reOpenErr := s.createStore(subPath, s.maxBlock, s.filesize)
-				if reOpenErr == nil {
-					s.substores.Store(i, newOriginal)
-				}
-				if reOpenErr != nil {
-					return fmt.Errorf("failed to rename compacting substore %d to original: %v, and failed to re-open original: %w", i, err, reOpenErr)
-				}
-				return fmt.Errorf("failed to rename compacting substore %d to original: %w", i, err)
-			}
-
-			// Open new substore
-			newStore, err := s.createStore(subPath, s.maxBlock, s.filesize)
-			if err != nil {
-				// This is a bad state, but we have the .old backup.
-				// Attempt to revert if possible
-				os.Rename(subPath, compactPath) // move bad new back
-				os.Rename(oldPath, subPath)     // restore old
-				newOriginal, reOpenErr := s.createStore(subPath, s.maxBlock, s.filesize)
-				if reOpenErr == nil {
-					s.substores.Store(i, newOriginal)
-				}
-				if reOpenErr != nil {
-					return fmt.Errorf("failed to open new substore %d after swap: %v, and failed to revert to original: %w.  Good luck!", i, err, reOpenErr)
-				}
-				return fmt.Errorf("failed to open new substore %d after swap: %w", i, err)
-			}
-
-			s.substores.Store(i, newStore)
-			return nil
-		})
-		if swapErr != nil {
-			return swapErr
-		}
-
-		// Final cleanup of .old
-		os.RemoveAll(oldPath)
+	if !s.running.Load() {
+		return fmt.Errorf("store is closed")
 	}
-
+	for id := 0; id < int(s.N); id++ {
+		if err := s.compactSubstore(id); err != nil {
+			return fmt.Errorf("compact substore %d: %w", id, err)
+		}
+	}
 	return nil
 }
