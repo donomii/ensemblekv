@@ -15,11 +15,12 @@ const compactionMarker = "ensemble-compaction-v1\n"
 const (
 	compactionCopied compactionKeyState = iota + 1
 	compactionDeleted
+	compactionPending
 )
 
 type compactionState struct {
 	target       KvLike
-	keys         map[string]compactionKeyState
+	keys         *diskKeyIndex
 	failure      error
 	subPath      string
 	targetClosed bool
@@ -36,17 +37,16 @@ func (s *EnsembleKv) compactSubstore(id int) (result error) {
 	}
 	defer func() { result = errors.Join(result, s.abortCompaction(id, state)) }()
 	// Iterate over keys from original store
-	for _, key := range keys {
-		if err := s.copyCompactionKey(id, state, key); err != nil {
-			return err
-		}
+	if err := keys.each(func(key []byte, status compactionKeyState) error {
+		return s.copyCompactionKey(id, state, key)
+	}); err != nil {
+		return err
 	}
 	return s.finishCompaction(id, state)
 }
 
-func (s *EnsembleKv) prepareCompaction(id int) (*compactionState, [][]byte, error) {
+func (s *EnsembleKv) prepareCompaction(id int) (*compactionState, *diskKeyIndex, error) {
 	state := &compactionState{
-		keys:    make(map[string]compactionKeyState),
 		subPath: filepath.Join(s.directory, fmt.Sprint(s.generation), fmt.Sprint(id)),
 	}
 	err := s.runInSubstoreWithErr(id, func(source KvLike) error {
@@ -61,7 +61,7 @@ func (s *EnsembleKv) prepareCompaction(id int) (*compactionState, [][]byte, erro
 	if err != nil {
 		return nil, nil, err
 	}
-	for _, suffix := range []string{".compacting", ".retired"} {
+	for _, suffix := range []string{".compacting", ".retired", ".compaction-keys"} {
 		if err := os.RemoveAll(state.subPath + suffix); err != nil {
 			return nil, nil, fmt.Errorf("remove stale compaction path %s: %w", state.subPath+suffix, err)
 		}
@@ -71,10 +71,15 @@ func (s *EnsembleKv) prepareCompaction(id int) (*compactionState, [][]byte, erro
 	if err != nil {
 		return nil, nil, fmt.Errorf("create compaction target %s: %w", state.subPath, err)
 	}
-	var keys [][]byte
+	if err := os.MkdirAll(state.subPath+".compaction-keys", 0700); err != nil {
+		return nil, nil, errors.Join(err, s.abortCompaction(id, state))
+	}
+	state.keys, err = newDiskKeyIndex(state.subPath + ".compaction-keys")
+	if err != nil {
+		return nil, nil, errors.Join(err, s.abortCompaction(id, state))
+	}
 	err = s.runInSubstoreWithErr(id, func(source KvLike) error {
-		keys, err = compactionKeys(source)
-		if err != nil {
+		if err := state.keys.collect(source); err != nil {
 			return fmt.Errorf("enumerate source %s: %w", state.subPath, err)
 		}
 		// Register compact store for dual-writes
@@ -84,7 +89,7 @@ func (s *EnsembleKv) prepareCompaction(id int) (*compactionState, [][]byte, erro
 	if err != nil {
 		return nil, nil, errors.Join(err, s.abortCompaction(id, state))
 	}
-	return state, keys, nil
+	return state, state.keys, nil
 }
 
 func (s *EnsembleKv) copyCompactionKey(id int, state *compactionState, key []byte) error {
@@ -92,7 +97,12 @@ func (s *EnsembleKv) copyCompactionKey(id int, state *compactionState, key []byt
 		if err := s.checkCompaction(id, state); err != nil {
 			return err
 		}
-		if _, handled := state.keys[string(key)]; handled {
+		status, err := state.keys.get(key)
+		if err != nil {
+			state.failure = err
+			return err
+		}
+		if status != compactionPending {
 			return nil
 		}
 		value, err := source.Get(key)
@@ -107,8 +117,8 @@ func (s *EnsembleKv) copyCompactionKey(id int, state *compactionState, key []byt
 			state.failure = fmt.Errorf("copy key %x to %s.compacting: %w", key, state.subPath, err)
 			return state.failure
 		}
-		state.keys[string(key)] = compactionCopied
-		return nil
+		state.failure = state.keys.set(key, compactionCopied)
+		return state.failure
 	})
 }
 
@@ -127,15 +137,18 @@ func (s *EnsembleKv) finishCompaction(id int, state *compactionState) error {
 		}
 		// No dual writes may reach a closed target after a failed publication releases this lock.
 		s.compactingStores.Delete(id)
-		keys, err := compactionKeys(source)
+		keys, err := newDiskKeyIndex(state.subPath + ".compaction-keys")
 		if err != nil {
-			return fmt.Errorf("validate final source keys in %s: %w", state.subPath, err)
+			return err
 		}
 		// Some backends interpret Put(key, nil) as deletion; compare the actual final live set.
-		state.keys = make(map[string]compactionKeyState, len(keys))
-		for _, key := range keys {
-			state.keys[string(key)] = compactionCopied
+		if err := keys.collect(source); err != nil {
+			return errors.Join(fmt.Errorf("validate final source keys in %s: %w", state.subPath, err), keys.close())
 		}
+		if err := state.keys.close(); err != nil {
+			return errors.Join(err, keys.close())
+		}
+		state.keys = keys
 		if err := source.Flush(); err != nil {
 			return fmt.Errorf("flush source %s: %w", state.subPath, err)
 		}
@@ -211,25 +224,31 @@ func (s *EnsembleKv) publishCompaction(id int, state *compactionState) error {
 }
 
 func validateCompactionReplacement(replacement KvLike, state *compactionState) error {
-	keys, err := compactionKeys(replacement)
+	var expected, received int64
+	if err := state.keys.each(func(key []byte, status compactionKeyState) error {
+		if status != compactionDeleted {
+			expected++
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	err := forEachLiveKeyAt(replacement, state.subPath+".compaction-keys", func(key []byte) error {
+		status, err := state.keys.get(key)
+		if err != nil {
+			return err
+		}
+		if status != compactionPending {
+			return fmt.Errorf("reopened compacted source %s contains unexpected key %x", state.subPath, key)
+		}
+		received++
+		return nil
+	})
 	if err != nil {
 		return fmt.Errorf("validate reopened compacted source %s: %w", state.subPath, err)
 	}
-	expected := 0
-	for _, status := range state.keys {
-		if status == compactionCopied {
-			expected++
-		}
-	}
-	seen := make(map[string]bool, len(keys))
-	for _, key := range keys {
-		if seen[string(key)] || state.keys[string(key)] != compactionCopied {
-			return fmt.Errorf("reopened compacted source %s contains duplicate or unexpected key %x", state.subPath, key)
-		}
-		seen[string(key)] = true
-	}
-	if len(keys) != expected {
-		return fmt.Errorf("reopened compacted source %s contains %d keys, expected %d", state.subPath, len(keys), expected)
+	if received != expected {
+		return fmt.Errorf("reopened compacted source %s contains %d keys, expected %d", state.subPath, received, expected)
 	}
 	return nil
 }
@@ -276,13 +295,19 @@ func (s *EnsembleKv) restoreCompaction(id int, state *compactionState) (result e
 	return nil
 }
 
-func (s *EnsembleKv) abortCompaction(id int, state *compactionState) error {
+func (s *EnsembleKv) abortCompaction(id int, state *compactionState) (result error) {
 	lock, ok := s.substoreLocks.Load(id)
 	if !ok {
 		return fmt.Errorf("lock for substore %d not found during compaction cleanup", id)
 	}
 	lock.Lock()
 	defer lock.Unlock()
+	defer func() {
+		result = errors.Join(result, state.keys.close())
+		if state.keys == nil || state.keys.db == nil {
+			result = errors.Join(result, os.RemoveAll(state.subPath+".compaction-keys"))
+		}
+	}()
 	if state.finished {
 		return nil
 	}
@@ -417,17 +442,17 @@ func (s *EnsembleKv) recoverCompaction(primary string) error {
 		return fmt.Errorf("compaction marker for %s has no primary or original backup", primary)
 	}
 	if retired {
-		if err := s.validateCompactionRecovery(primary); err != nil {
+		if err := s.validateCompactionRecovery(primary, primary+".compaction-keys"); err != nil {
 			return err
 		}
 	}
 	if marked && present && !old && !retired {
-		if err := s.validateCompactionRecovery(primary); err != nil {
+		if err := s.validateCompactionRecovery(primary, primary+".compaction-keys"); err != nil {
 			return err
 		}
 	}
 	if old {
-		if err := s.validateCompactionRecovery(primary + ".old"); err != nil {
+		if err := s.validateCompactionRecovery(primary+".old", primary+".compaction-keys"); err != nil {
 			return err
 		}
 		if err := os.RemoveAll(primary); err != nil {
@@ -448,7 +473,7 @@ func (s *EnsembleKv) recoverCompaction(primary string) error {
 	if incomplete && !present {
 		return fmt.Errorf("incomplete compaction at %s has no primary or original backup", primary)
 	}
-	for _, suffix := range []string{".compacting", ".retired"} {
+	for _, suffix := range []string{".compacting", ".retired", ".compaction-keys"} {
 		if err := os.RemoveAll(primary + suffix); err != nil {
 			return fmt.Errorf("clean recovered compaction path %s: %w", primary+suffix, err)
 		}
@@ -475,7 +500,7 @@ func (s *EnsembleKv) emptyCompactionBootstrap(primary string) bool {
 	return true
 }
 
-func (s *EnsembleKv) validateCompactionRecovery(path string) error {
+func (s *EnsembleKv) validateCompactionRecovery(path, scratchParent string) error {
 	inventory, err := inspectCompactionRecovery(path)
 	if err != nil {
 		return err
@@ -486,7 +511,9 @@ func (s *EnsembleKv) validateCompactionRecovery(path string) error {
 	}
 	readErr := validateCompactionRecoveryStore(path, store, inventory)
 	if readErr == nil {
-		_, readErr = compactionKeys(store)
+		if readErr = os.MkdirAll(scratchParent, 0700); readErr == nil {
+			readErr = streamKeyRecordsAt(store, scratchParent, func([]byte, bool) error { return nil })
+		}
 	}
 	if err := errors.Join(readErr, store.Close()); err != nil {
 		return fmt.Errorf("validate authoritative compaction recovery path %s: %w", path, err)

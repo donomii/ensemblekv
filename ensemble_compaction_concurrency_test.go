@@ -251,10 +251,11 @@ func TestEnsembleCompactionMutationOrderingAcrossBackends(t *testing.T) {
 			for key, value := range initial {
 				put(key, value)
 			}
-			state, keys, err := store.prepareCompaction(0)
+			state, snapshot, err := store.prepareCompaction(0)
 			if err != nil {
 				t.Fatalf("prepare compaction: %v", err)
 			}
+			keys := compactionTestKeys(t, snapshot)
 			t.Cleanup(func() {
 				if err := store.abortCompaction(0, state); err != nil {
 					t.Errorf("release compaction state: %v", err)
@@ -334,10 +335,11 @@ func TestEnsembleCompactionFailedMutationsPreventPublication(t *testing.T) {
 			if err := store.Flush(); err != nil {
 				t.Fatal(err)
 			}
-			state, keys, err := store.prepareCompaction(0)
+			state, snapshot, err := store.prepareCompaction(0)
 			if err != nil {
 				t.Fatal(err)
 			}
+			keys := compactionTestKeys(t, snapshot)
 			t.Cleanup(func() {
 				if err := store.abortCompaction(0, state); err != nil {
 					t.Errorf("abort failed compaction: %v", err)
@@ -395,6 +397,20 @@ func TestEnsembleCompactionFailedMutationsPreventPublication(t *testing.T) {
 	}
 }
 
+func compactionTestKeys(t *testing.T, index *diskKeyIndex) [][]byte {
+	t.Helper()
+	var keys [][]byte
+	if err := index.each(func(key []byte, state compactionKeyState) error {
+		if state == compactionPending {
+			keys = append(keys, key)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return keys
+}
+
 func TestEnsembleCompactionClosedTargetUnregisteredBeforeAbort(t *testing.T) {
 	directory := t.TempDir()
 	store := openConcurrentCompactionStore(t, directory, 1, MmapSingleCreator)
@@ -402,10 +418,11 @@ func TestEnsembleCompactionClosedTargetUnregisteredBeforeAbort(t *testing.T) {
 	if err := store.Put([]byte("original"), expected["original"]); err != nil {
 		t.Fatal(err)
 	}
-	state, keys, err := store.prepareCompaction(0)
+	state, snapshot, err := store.prepareCompaction(0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	keys := compactionTestKeys(t, snapshot)
 	t.Cleanup(func() {
 		if err := store.abortCompaction(0, state); err != nil {
 			t.Errorf("abort unpublished compaction: %v", err)

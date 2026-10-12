@@ -3,8 +3,10 @@ package ensemblekv
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"os"
 	"sort"
 	"sync"
@@ -20,7 +22,7 @@ const (
 	// File format constants
 	singleFileHeaderSize = 4096
 	singleFileMagic      = 0x4C534D46 // "LSMF"
-	singleFileVersion    = 1
+	singleFileVersion    = 2
 
 	// WAL constants
 	walEntryHeaderSize = 28               // checksum(8) + keyLen(8) + valLen(8) + flags(4)
@@ -50,9 +52,12 @@ type SingleFileLSM struct {
 	mutex    sync.RWMutex
 
 	// Header information
-	walOffset     int64
-	sstableOffset int64
-	indexOffset   int64
+	walOffset        int64
+	sstableOffset    int64
+	indexOffset      int64
+	headerGeneration uint64
+	headerSlot       int
+	writeFailure     error
 
 	// In-memory components
 	memTable     map[string][]byte // Active write buffer (nil value = tombstone)
@@ -97,6 +102,7 @@ type fileHeader struct {
 	indexOffset   int64
 	numSSTables   int32
 	checksum      uint32
+	generation    uint64
 }
 
 // NewSingleFileLSM creates or opens a single-file LSM store
@@ -143,60 +149,29 @@ func NewSingleFileLSM(filePath string, blockSize int64, maxSize int64) (*SingleF
 
 // initializeNewFile writes the initial header to a new file
 func (lsm *SingleFileLSM) initializeNewFile(file *os.File) error {
-	header := make([]byte, singleFileHeaderSize)
-
-	binary.LittleEndian.PutUint32(header[0:4], singleFileMagic)
-	binary.LittleEndian.PutUint32(header[4:8], singleFileVersion)
-	binary.LittleEndian.PutUint64(header[8:16], uint64(lsm.walOffset))
-	binary.LittleEndian.PutUint64(header[16:24], uint64(lsm.sstableOffset))
-	binary.LittleEndian.PutUint64(header[24:32], 0) // indexOffset initially 0
-	binary.LittleEndian.PutUint32(header[32:36], 0) // numSSTables initially 0
-
-	// Write checksum
-	checksum := crc32.ChecksumIEEE(header[0:36])
-	binary.LittleEndian.PutUint32(header[36:40], checksum)
-
-	if _, err := file.WriteAt(header, 0); err != nil {
+	if err := file.Truncate(singleFileHeaderSize); err != nil {
 		return err
 	}
-
-	return file.Sync()
+	lsm.file = file
+	return lsm.syncHeader()
 }
 
 // loadFromDisk loads the header and recovers from WAL
 func (lsm *SingleFileLSM) loadFromDisk() error {
-	// Read header
-	header := make([]byte, singleFileHeaderSize)
-	if _, err := lsm.file.ReadAt(header, 0); err != nil {
-		return fmt.Errorf("failed to read header: %w", err)
+	header, slot, repair, err := lsm.readPublishedHeader()
+	if err != nil {
+		return err
 	}
-
-	// Validate header
-	magic := binary.LittleEndian.Uint32(header[0:4])
-	if magic != singleFileMagic {
-		return fmt.Errorf("invalid magic number: got %x, want %x", magic, singleFileMagic)
+	lsm.walOffset, lsm.sstableOffset, lsm.indexOffset = header.walOffset, header.sstableOffset, header.indexOffset
+	lsm.headerGeneration, lsm.headerSlot = header.generation, slot
+	if repair {
+		if err := lsm.publishHeader(header); err != nil {
+			return fmt.Errorf("repair header redundancy: %w", err)
+		}
 	}
-
-	version := binary.LittleEndian.Uint32(header[4:8])
-	if version != singleFileVersion {
-		return fmt.Errorf("unsupported version: %d", version)
-	}
-
-	// Verify checksum
-	storedChecksum := binary.LittleEndian.Uint32(header[36:40])
-	computedChecksum := crc32.ChecksumIEEE(header[0:36])
-	if storedChecksum != computedChecksum {
-		return fmt.Errorf("header checksum mismatch")
-	}
-
-	// Load offsets
-	lsm.walOffset = int64(binary.LittleEndian.Uint64(header[8:16]))
-	lsm.sstableOffset = int64(binary.LittleEndian.Uint64(header[16:24]))
-	lsm.indexOffset = int64(binary.LittleEndian.Uint64(header[24:32]))
-	numSSTables := binary.LittleEndian.Uint32(header[32:36])
 
 	// Load SSTable metadata from index
-	if err := lsm.loadSSTables(int(numSSTables)); err != nil {
+	if err := lsm.loadSSTables(int(header.numSSTables)); err != nil {
 		return fmt.Errorf("failed to load SSTables: %w", err)
 	}
 
@@ -212,6 +187,13 @@ func (lsm *SingleFileLSM) loadFromDisk() error {
 func (lsm *SingleFileLSM) loadSSTables(count int) error {
 	if count == 0 || lsm.indexOffset == 0 {
 		return nil
+	}
+	info, err := lsm.file.Stat()
+	if err != nil {
+		return err
+	}
+	if lsm.indexOffset > info.Size() || int64(count) > (info.Size()-lsm.indexOffset)/32 {
+		return fmt.Errorf("SSTable index at %d requires %d metadata records beyond file size %d", lsm.indexOffset, count, info.Size())
 	}
 
 	lsm.sstables = make([]sstableMetadata, 0, count)
@@ -237,6 +219,10 @@ func (lsm *SingleFileLSM) loadSSTables(count int) error {
 		maxKeyLen := int(binary.LittleEndian.Uint32(metaBuf[28:32]))
 
 		offset += 32
+		if minKeyLen <= 0 || maxKeyLen <= 0 || int64(minKeyLen) > maxKeySize || int64(maxKeyLen) > maxKeySize ||
+			int64(minKeyLen)+int64(maxKeyLen) > info.Size()-offset {
+			return fmt.Errorf("SSTable metadata %d has invalid boundary key lengths %d and %d at offset %d", i, minKeyLen, maxKeyLen, offset)
+		}
 
 		// Read min key
 		if minKeyLen > 0 {
@@ -281,14 +267,17 @@ func (lsm *SingleFileLSM) validateSSTable(meta *sstableMetadata) error {
 	}
 
 	// Read and verify checksum
-	data := make([]byte, meta.size)
-	if _, err := lsm.file.ReadAt(data, meta.offset); err != nil {
+	checksum := crc32.NewIEEE()
+	var buffer [32 * 1024]byte
+	read, err := io.CopyBuffer(checksum, io.NewSectionReader(lsm.file, meta.offset, meta.size), buffer[:])
+	if err != nil {
 		return err
 	}
-
-	checksum := crc32.ChecksumIEEE(data)
-	if checksum != meta.checksum {
-		return fmt.Errorf("SSTable checksum mismatch")
+	if read != meta.size {
+		return fmt.Errorf("SSTable at %d requires %d bytes, read %d: %w", meta.offset, meta.size, read, io.ErrUnexpectedEOF)
+	}
+	if checksum.Sum32() != meta.checksum {
+		return fmt.Errorf("SSTable at %d checksum mismatch: expected %08x, received %08x", meta.offset, meta.checksum, checksum.Sum32())
 	}
 
 	return nil
@@ -389,23 +378,8 @@ func (lsm *SingleFileLSM) readWALEntry(offset int64) (*walEntry, int, error) {
 
 // syncHeader writes the current header to disk
 func (lsm *SingleFileLSM) syncHeader() error {
-	header := make([]byte, singleFileHeaderSize)
-
-	binary.LittleEndian.PutUint32(header[0:4], singleFileMagic)
-	binary.LittleEndian.PutUint32(header[4:8], singleFileVersion)
-	binary.LittleEndian.PutUint64(header[8:16], uint64(lsm.walOffset))
-	binary.LittleEndian.PutUint64(header[16:24], uint64(lsm.sstableOffset))
-	binary.LittleEndian.PutUint64(header[24:32], uint64(lsm.indexOffset))
-	binary.LittleEndian.PutUint32(header[32:36], uint32(len(lsm.sstables)))
-
-	checksum := crc32.ChecksumIEEE(header[0:36])
-	binary.LittleEndian.PutUint32(header[36:40], checksum)
-
-	if _, err := lsm.file.WriteAt(header, 0); err != nil {
-		return err
-	}
-
-	return lsm.file.Sync()
+	return lsm.publishHeader(fileHeader{walOffset: lsm.walOffset, sstableOffset: lsm.sstableOffset,
+		indexOffset: lsm.indexOffset, numSSTables: int32(len(lsm.sstables))})
 }
 
 // Get retrieves a value for the given key
@@ -420,7 +394,7 @@ func (lsm *SingleFileLSM) Get(key []byte) ([]byte, error) {
 	// Check memtable first
 	if val, exists := lsm.memTable[string(key)]; exists {
 		if val == nil {
-			return nil, fmt.Errorf("key deleted")
+			return nil, errKeyNotFound
 		}
 		if len(val) == 0 {
 			return []byte{}, nil
@@ -443,18 +417,17 @@ func (lsm *SingleFileLSM) Get(key []byte) ([]byte, error) {
 		// Search within SSTable
 		val, found, err := lsm.searchSSTable(meta, key)
 		if err != nil {
-			// Skip corrupt SSTables
-			continue
+			return nil, fmt.Errorf("read SingleFileLSM %s table at %d for key %q: %w", lsm.filePath, meta.offset, key, err)
 		}
 		if found {
 			if val == nil {
-				return nil, fmt.Errorf("key deleted")
+				return nil, errKeyNotFound
 			}
 			return val, nil
 		}
 	}
 
-	return nil, fmt.Errorf("key not found")
+	return nil, errKeyNotFound
 }
 
 // searchSSTable searches for a key within a specific SSTable
@@ -463,6 +436,9 @@ func (lsm *SingleFileLSM) searchSSTable(meta *sstableMetadata, key []byte) ([]by
 	endOffset := meta.offset + meta.size
 
 	for offset < endOffset {
+		if endOffset-offset < 24 {
+			return nil, false, fmt.Errorf("SSTable at %d has incomplete extent header at %d", meta.offset, offset)
+		}
 		// Read extent header (checksum(8) + keyLen(8) + valLen(8))
 		headerBuf := make([]byte, 24)
 		if _, err := lsm.file.ReadAt(headerBuf, offset); err != nil {
@@ -473,8 +449,9 @@ func (lsm *SingleFileLSM) searchSSTable(meta *sstableMetadata, key []byte) ([]by
 		keyLen := int64(binary.LittleEndian.Uint64(headerBuf[8:16]))
 		valLen := int64(binary.LittleEndian.Uint64(headerBuf[16:24]))
 
-		if keyLen <= 0 || keyLen > maxKeySize {
-			return nil, false, fmt.Errorf("invalid key length in SSTable")
+		if keyLen <= 0 || keyLen > maxKeySize || keyLen > endOffset-offset-24 ||
+			valLen < tombstoneMarker || valLen > maxValueSize || max(valLen, 0) > endOffset-offset-24-keyLen {
+			return nil, false, fmt.Errorf("invalid SSTable extent at %d: key length=%d value length=%d remaining=%d", offset, keyLen, valLen, endOffset-offset)
 		}
 
 		// Read key
@@ -486,6 +463,9 @@ func (lsm *SingleFileLSM) searchSSTable(meta *sstableMetadata, key []byte) ([]by
 		// Check if this is our key
 		if bytes.Equal(entryKey, key) {
 			if valLen == tombstoneMarker {
+				if uint64(crc32.ChecksumIEEE(entryKey)) != checksum {
+					return nil, false, fmt.Errorf("SSTable tombstone at %d has invalid checksum", offset)
+				}
 				return nil, true, nil
 			}
 
@@ -524,6 +504,9 @@ func (lsm *SingleFileLSM) Put(key []byte, value []byte) error {
 	if lsm.closed {
 		return fmt.Errorf("store is closed")
 	}
+	if lsm.writeFailure != nil {
+		return lsm.writeFailure
+	}
 
 	// Write to WAL first (crash resistance)
 	if err := lsm.appendToWAL(key, value); err != nil {
@@ -555,6 +538,9 @@ func (lsm *SingleFileLSM) Delete(key []byte) error {
 
 	if lsm.closed {
 		return fmt.Errorf("store is closed")
+	}
+	if lsm.writeFailure != nil {
+		return lsm.writeFailure
 	}
 
 	// Write tombstone to WAL
@@ -675,9 +661,14 @@ func (lsm *SingleFileLSM) ensureWALSpace(entrySize int64) error {
 func (lsm *SingleFileLSM) clearWAL() error {
 	zeros := make([]byte, min(int64(walEntryHeaderSize), lsm.walSize))
 	if _, err := lsm.file.WriteAt(zeros, lsm.walOffset); err != nil {
-		return fmt.Errorf("failed to invalidate WAL at offset %d: %w", lsm.walOffset, err)
+		lsm.writeFailure = fmt.Errorf("SingleFileLSM %s failed to invalidate WAL at %d; reopen before writing: %w", lsm.filePath, lsm.walOffset, err)
+		return lsm.writeFailure
 	}
-	return lsm.file.Sync()
+	if err := lsm.file.Sync(); err != nil {
+		lsm.writeFailure = fmt.Errorf("SingleFileLSM %s failed to sync WAL invalidation at %d; reopen before writing: %w", lsm.filePath, lsm.walOffset, err)
+		return lsm.writeFailure
+	}
+	return nil
 }
 
 // flushMemTable writes the memtable to a new SSTable
@@ -858,6 +849,9 @@ func (lsm *SingleFileLSM) Flush() error {
 	if lsm.closed {
 		return fmt.Errorf("store is closed")
 	}
+	if lsm.writeFailure != nil {
+		return lsm.writeFailure
+	}
 
 	if err := lsm.flushMemTable(); err != nil {
 		return err
@@ -873,6 +867,10 @@ func (lsm *SingleFileLSM) Close() error {
 
 	if lsm.closed {
 		return nil
+	}
+	if lsm.writeFailure != nil {
+		lsm.closed = true
+		return errors.Join(lsm.writeFailure, lsm.file.Close())
 	}
 
 	// Flush memtable
@@ -1108,43 +1106,10 @@ func (s *SingleFileLSM) Keys() [][]byte {
 }
 
 func (s *SingleFileLSM) keysForCompaction() ([][]byte, error) {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-	if s.closed {
-		return nil, fmt.Errorf("SingleFileLSM compaction source %s is closed", s.filePath)
-	}
-	var header [40]byte
-	if _, err := s.file.ReadAt(header[:], 0); err != nil {
-		return nil, fmt.Errorf("read SingleFileLSM compaction header: %w", err)
-	}
-	if binary.LittleEndian.Uint32(header[:4]) != singleFileMagic ||
-		binary.LittleEndian.Uint32(header[4:8]) != singleFileVersion ||
-		binary.LittleEndian.Uint32(header[36:40]) != crc32.ChecksumIEEE(header[:36]) {
-		return nil, fmt.Errorf("SingleFileLSM compaction source %s has an invalid header", s.filePath)
-	}
-	tableCount := int(binary.LittleEndian.Uint32(header[32:36]))
-	indexOffset := int64(binary.LittleEndian.Uint64(header[24:32]))
-	if tableCount != len(s.sstables) || indexOffset != s.indexOffset {
-		return nil, fmt.Errorf("SingleFileLSM compaction source loaded %d tables at index %d; header requires %d tables at index %d", len(s.sstables), s.indexOffset, tableCount, indexOffset)
-	}
-	states := make(map[string]bool)
-	for key, value := range s.memTable {
-		states[key] = value != nil
-	}
-	for index := len(s.sstables) - 1; index >= 0; index-- {
-		meta := &s.sstables[index]
-		if err := s.validateSSTable(meta); err != nil {
-			return nil, fmt.Errorf("validate compaction SSTable %d: %w", index, err)
-		}
-		if err := s.iterateSSTable(meta, func(key, value []byte) error { return nil }, states); err != nil {
-			return nil, fmt.Errorf("enumerate compaction SSTable %d: %w", index, err)
-		}
-	}
 	var keys [][]byte
-	for key, exists := range states {
-		if exists {
-			keys = append(keys, []byte(key))
-		}
-	}
-	return keys, nil
+	err := forEachLiveKey(s, func(key []byte) error {
+		keys = append(keys, bytes.Clone(key))
+		return nil
+	})
+	return keys, err
 }
