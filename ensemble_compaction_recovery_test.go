@@ -44,10 +44,11 @@ func TestEnsembleCompactionAbortsSourceReadFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, keys, err := store.prepareCompaction(0)
+	state, snapshot, err := store.prepareCompaction(0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	keys := compactionTestKeys(t, snapshot)
 	if len(keys) != 1 {
 		t.Fatalf("prepared %d source keys; expected 1", len(keys))
 	}
@@ -606,10 +607,11 @@ func TestEnsembleCompactionPreservesConcurrentNilDeletion(t *testing.T) {
 	if err := store.Put([]byte("deleted"), []byte("original")); err != nil {
 		t.Fatal(err)
 	}
-	state, keys, err := store.prepareCompaction(0)
+	state, snapshot, err := store.prepareCompaction(0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	keys := compactionTestKeys(t, snapshot)
 	defer store.abortCompaction(0, state)
 	if err := store.Put([]byte("deleted"), nil); err != nil {
 		t.Fatal(err)

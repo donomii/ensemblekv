@@ -373,17 +373,21 @@ func TestCompactionKeysRejectsPartialManagerSplits(t *testing.T) {
 			if err := child.Close(); err != nil {
 				t.Fatal(err)
 			}
-			parent = open(directory)
-			defer parent.Close()
-			if keys, err := compactionKeys(parent); err == nil {
-				t.Fatalf("partial %s split returned keys %q without an error", name, keys)
-			}
-			var original KvLike
-			if tree, ok := parent.(*TreeLSM); ok {
-				original = tree.currentStore
+			var reopenErr error
+			if name == "Tree" {
+				parent, reopenErr = NewTreeLSM(directory, 4096, 1<<20, 0, BoltDbCreator)
 			} else {
-				original = parent.(*StarLSM).currentStore
+				parent, reopenErr = NewStarLSM(directory, 4096, 1<<20, BoltDbCreator)
 			}
+			if reopenErr == nil {
+				parent.Close()
+				t.Fatalf("partial %s split reopened without completion evidence", name)
+			}
+			original, err := BoltDbCreator(filepath.Join(directory, "current"), 4096, 1<<20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer original.Close()
 			value, err := original.Get([]byte("preserved"))
 			if err != nil || string(value) != "original" {
 				t.Fatalf("original parent data after rejected compaction=%q error=%v", value, err)

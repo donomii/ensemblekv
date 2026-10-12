@@ -156,7 +156,7 @@ func (s *JsonKV) Get(key []byte) ([]byte, error) {
 
 	value, exists := s.data[string(key)]
 	if !exists {
-		return nil, fmt.Errorf("key not found")
+		return nil, fmt.Errorf("JsonKV key %q: %w", key, errKeyNotFound)
 	}
 	return bytes.Clone(value), nil
 }

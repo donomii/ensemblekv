@@ -50,6 +50,7 @@ package ensemblekv
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -191,7 +192,11 @@ func (l *Linelsm) Put(key, value []byte) error {
 	}
 
 	// Check if we need to trigger a flush on Tier 0.
-	if l.shouldFlushTier(0) {
+	shouldFlush, err := l.shouldFlushTier(0)
+	if err != nil {
+		return fmt.Errorf("failed to measure tier 0: %w", err)
+	}
+	if shouldFlush {
 		if err := l.flushTier(0); err != nil {
 			return fmt.Errorf("failed to flush tier 0: %w", err)
 		}
@@ -214,18 +219,22 @@ func (l *Linelsm) Get(key []byte) ([]byte, error) {
 	for i := 0; i < len(l.tiers); i++ {
 		for _, store := range l.tiers[i] {
 			// Check for tombstone.
-			if store.Exists(tombstoneKey) {
-				return nil, fmt.Errorf("key %q deleted", key)
+			if _, err := store.Get(tombstoneKey); err == nil {
+				return nil, fmt.Errorf("key %q deleted: %w", key, errKeyNotFound)
+			} else if !errors.Is(err, errKeyNotFound) {
+				return nil, fmt.Errorf("read LineLSM tier %d tombstone for key %q: %w", i, key, err)
 			}
 
 			// The first value is newer than entries in the remaining tiers.
-			if store.Exists(dataKey) {
-				return store.Get(dataKey)
+			if value, err := store.Get(dataKey); err == nil {
+				return value, nil
+			} else if !errors.Is(err, errKeyNotFound) {
+				return nil, fmt.Errorf("read LineLSM tier %d value for key %q: %w", i, key, err)
 			}
 		}
 	}
 
-	return nil, fmt.Errorf("key %q not found", key)
+	return nil, fmt.Errorf("key %q: %w", key, errKeyNotFound)
 }
 
 // Delete marks a key as deleted by inserting a tombstone.
@@ -247,7 +256,11 @@ func (l *Linelsm) Delete(key []byte) error {
 	}
 
 	// Check flush condition on Tier 0.
-	if l.shouldFlushTier(0) {
+	shouldFlush, err := l.shouldFlushTier(0)
+	if err != nil {
+		return fmt.Errorf("failed to measure tier 0: %w", err)
+	}
+	if shouldFlush {
 		if err := l.flushTier(0); err != nil {
 			return fmt.Errorf("failed to flush tier 0: %w", err)
 		}
@@ -297,17 +310,21 @@ func (l *Linelsm) Keys() [][]byte {
 }
 
 // shouldFlushTier determines if a tier needs flushing based on its total size.
-func (l *Linelsm) shouldFlushTier(tier int) bool {
+func (l *Linelsm) shouldFlushTier(tier int) (bool, error) {
 	if tier >= len(l.maxTierSizes) {
-		return false
+		return false, nil
 	}
 
 	var totalSize int64
 	for _, store := range l.tiers[tier] {
-		totalSize += store.Size()
+		size, err := StoreSizeBytes(store)
+		if err != nil {
+			return false, err
+		}
+		totalSize += size
 	}
 
-	return totalSize > l.maxTierSizes[tier]
+	return totalSize > l.maxTierSizes[tier], nil
 }
 
 // flushTier merges data from the given tier into the next tier.

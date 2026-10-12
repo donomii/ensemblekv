@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -21,7 +22,7 @@ import (
 
 type CreatorFunc func(directory string, blockSize, fileSize int64) (KvLike, error)
 
-var errKeyNotFound = errors.New("key not found")
+var errKeyNotFound = ErrKeyNotFound
 
 // ExtentKeyValueStore is a key-value store that uses a single storage file and an index file to store data.  It can ingest a large amount of data at close to the maximum transfer speed of the drive, and still have reasonable performance.  Deletes do not recover disk space, compaction is required.
 func ExtentCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
@@ -220,7 +221,11 @@ func (s *nuDbShim) Size() int64 {
 }
 
 func (s *nuDbShim) Get(key []byte) ([]byte, error) {
-	return s.dbHandle.Fetch(string(key))
+	value, err := s.dbHandle.Fetch(string(key))
+	if errors.Is(err, nudb.ErrKeyNotFound) {
+		return nil, fmt.Errorf("NuDB key %q: %w", key, errors.Join(errKeyNotFound, err))
+	}
+	return value, err
 }
 
 func (s *nuDbShim) Keys() [][]byte {
@@ -534,7 +539,7 @@ func (s *PudgeShim) Get(key []byte) ([]byte, error) {
 	err := s.db.Get(key, &value)
 	if err != nil {
 		if err == pudge.ErrKeyNotFound {
-			return nil, fmt.Errorf("key not found")
+			return nil, fmt.Errorf("Pudge key %q: %w", key, errKeyNotFound)
 		}
 		return nil, err
 	}
@@ -682,6 +687,10 @@ func (s *S3Shim) Get(key []byte) ([]byte, error) {
 		Key:    aws.String(s.keyToPath(key)),
 	})
 	if err != nil {
+		var awsError awserr.Error
+		if errors.As(err, &awsError) && awsError.Code() == s3.ErrCodeNoSuchKey {
+			return nil, fmt.Errorf("S3 bucket %q key %q: %w", s.bucketName, key, errors.Join(errKeyNotFound, err))
+		}
 		return nil, err
 	}
 	defer out.Body.Close()
