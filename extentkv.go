@@ -10,7 +10,6 @@ import (
 	"sync"
 
 	"github.com/donomii/clusterF/syncmap"
-	"github.com/donomii/goof"
 )
 
 var EnableIndexCaching bool = true // Feature flag for index caching
@@ -849,10 +848,12 @@ func (s *ExtentKeyValStore) Get(key []byte) ([]byte, error) {
 			if start < 0 {
 				return nil, errors.New("key marked as not present in cache")
 			}
-			s.valuesFile.Seek(start, 0)
+			if _, err := s.valuesFile.Seek(start, 0); err != nil {
+				return nil, fmt.Errorf("seek Extent value for key %x in %s at %d: %w", key, s.valuesFile.Name(), start, err)
+			}
 			data, err := readNbytes(s.valuesFile, int(end-start))
 			if err != nil {
-				goof.Panicf("While attempting to read from %v to %v(size %v): %v", start, end, end-start, err)
+				return nil, fmt.Errorf("read Extent value for key %x in %s from %d to %d: %w", key, s.valuesFile.Name(), start, end, err)
 			}
 			return data, nil
 		}
