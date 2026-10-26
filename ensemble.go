@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	_ "log"
@@ -69,6 +70,8 @@ type EnsembleKv struct {
 	compactMu        sync.Mutex
 	substoreLocks    *syncmap.SyncMap[int, *sync.Mutex]
 	compactingStores *syncmap.SyncMap[int, KvLike]
+	stopWorker       chan struct{}
+	workerDone       chan struct{}
 }
 
 func NewEnsembleKv(directory string, N, maxBlock, maxKeys, filesie int64, createStore CreatorFunc) (*EnsembleKv, error) {
@@ -84,6 +87,8 @@ func NewEnsembleKv(directory string, N, maxBlock, maxKeys, filesie int64, create
 		flushStore:       syncmap.NewSyncMap[int, bool](),
 		substoreLocks:    syncmap.NewSyncMap[int, *sync.Mutex](),
 		compactingStores: syncmap.NewSyncMap[int, KvLike](),
+		stopWorker:       make(chan struct{}),
+		workerDone:       make(chan struct{}),
 	}
 
 	if err := os.MkdirAll(directory, os.ModePerm); err != nil {
@@ -95,37 +100,49 @@ func NewEnsembleKv(directory string, N, maxBlock, maxKeys, filesie int64, create
 		return nil, err
 	}
 
+	if store.N <= 0 {
+		return nil, fmt.Errorf("Ensemble substore count must be positive, received %d", store.N)
+	}
 	if err := store.setup(); err != nil {
-		return nil, err
+		return nil, errors.Join(err, store.closeSubstores())
+	}
+	if err := store.saveMetadata(); err != nil {
+		return nil, errors.Join(err, store.closeSubstores())
 	}
 
-	store.saveMetadata()
-
-	go store.flushWorker()
 	store.running.Store(true)
+	go store.flushWorker()
 
 	return store, nil
 }
 
 func (s *EnsembleKv) flushWorker() {
 	// Periodically flush the substores to disk
+	defer close(s.workerDone)
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
 	for {
-		time.Sleep(10 * time.Second)
-		if !s.running.Load() {
-			continue
-		}
-		s.flushStore.Range(func(i int, needsFlush bool) bool {
-			if needsFlush {
-				if substore, ok := s.substores.Load(i); ok {
-					if err := substore.Flush(); err != nil {
-						fmt.Printf("Error flushing substore %d: %v\n", i, err)
-					} else {
-						s.flushStore.Store(i, false)
+		select {
+		case <-s.stopWorker:
+			return
+		case <-ticker.C:
+			s.flushStore.Range(func(id int, _ bool) bool {
+				err := s.runInSubstoreWithErr(id, func(substore KvLike) error {
+					if dirty, _ := s.flushStore.Load(id); !dirty {
+						return nil
 					}
+					if err := substore.Flush(); err != nil {
+						return err
+					}
+					s.flushStore.Store(id, false)
+					return nil
+				})
+				if err != nil && s.running.Load() {
+					logEnsembleFlushError(id, err)
 				}
-			}
-			return true
-		})
+				return true
+			})
+		}
 	}
 }
 
@@ -208,6 +225,9 @@ func (s *EnsembleKv) runInSubstore(id int, f func(substore KvLike)) bool {
 	}
 	lock.Lock()
 	defer lock.Unlock()
+	if !s.running.Load() {
+		return false
+	}
 	if substore, ok := s.substores.Load(id); ok {
 		f(substore)
 		return true
@@ -222,6 +242,9 @@ func (s *EnsembleKv) runInSubstoreWithErr(id int, f func(substore KvLike) error)
 	}
 	lock.Lock()
 	defer lock.Unlock()
+	if !s.running.Load() {
+		return fmt.Errorf("store is closed")
+	}
 	if substore, ok := s.substores.Load(id); ok {
 		return f(substore)
 	}
@@ -394,43 +417,46 @@ func (s *EnsembleKv) Flush() error {
 	if !s.running.Load() {
 		return fmt.Errorf("store is closed")
 	}
-
-	var firstErr error
-	var errMu sync.Mutex
-	s.substores.Range(func(i int, substore KvLike) bool {
-		s.runInSubstore(i, func(substore KvLike) {
+	var result error
+	for id := 0; id < int(s.N); id++ {
+		err := s.runInSubstoreWithErr(id, func(substore KvLike) error {
 			if err := substore.Flush(); err != nil {
-				errMu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				errMu.Unlock()
+				return err
 			}
+			s.flushStore.Store(id, false)
+			return nil
 		})
-		return true
-	})
-	return firstErr
+		if err != nil {
+			result = errors.Join(result, fmt.Errorf("flush substore %d: %w", id, err))
+		}
+	}
+	return result
 }
 
 // Close closes all substores.
 func (s *EnsembleKv) Close() error {
-	s.running.Store(false)
+	s.compactMu.Lock()
+	defer s.compactMu.Unlock()
+	if !s.running.Swap(false) {
+		return nil
+	}
+	close(s.stopWorker)
+	<-s.workerDone
+	return s.closeSubstores()
+}
 
-	var firstErr error
-	var errMu sync.Mutex
-	s.substores.Range(func(i int, substore KvLike) bool {
-		s.runInSubstore(i, func(substore KvLike) {
-			if err := substore.Close(); err != nil {
-				errMu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				errMu.Unlock()
-			}
-		})
+func (s *EnsembleKv) closeSubstores() error {
+	var result error
+	s.substores.Range(func(id int, substore KvLike) bool {
+		lock, _ := s.substoreLocks.Load(id)
+		lock.Lock()
+		defer lock.Unlock()
+		if err := substore.Close(); err != nil {
+			result = errors.Join(result, fmt.Errorf("close substore %d: %w", id, err))
+		}
 		return true
 	})
-	return firstErr
+	return result
 }
 
 // Metadata represents the persistent state of the Store.
@@ -548,6 +574,9 @@ func (s *EnsembleKv) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) 
 func (s *EnsembleKv) ConcurrentCompact() error {
 	s.compactMu.Lock()
 	defer s.compactMu.Unlock()
+	if !s.running.Load() {
+		return fmt.Errorf("store is closed")
+	}
 
 	genPath := filepath.Join(s.directory, fmt.Sprintf("%d", s.generation))
 
