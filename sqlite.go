@@ -1,6 +1,7 @@
 package ensemblekv
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -85,7 +86,7 @@ func (s *SQLiteKV) Get(key []byte) ([]byte, error) {
 	var value []byte
 	err := s.db.QueryRow(`SELECT value FROM kv_store WHERE key = ?`, string(key)).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("key not found")
+		return nil, errKeyNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("sqlite get: %w", err)
@@ -207,33 +208,27 @@ func (s *SQLiteKV) KeyHistory(key []byte) ([][]byte, error) {
 }
 
 func (s *SQLiteKV) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
-
-	// SQLite supports LIKE operator for prefix matching
-	prefixStr := string(prefix) + "%"
-	rows, err := s.getRows(`SELECT key, value FROM kv_store WHERE key LIKE ?`, prefixStr)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite prefix query: %w", err)
-	}
-	defer rows.Close()
-
 	visited := make(map[string]bool)
-
-	for rows.Next() {
-		var k string
-		var v []byte
-		if err := rows.Scan(&k, &v); err != nil {
-			return nil, fmt.Errorf("sqlite prefix scan: %w", err)
+	keys, err := s.List()
+	if err != nil {
+		return visited, err
+	}
+	for _, key := range keys {
+		if !bytes.HasPrefix([]byte(key), prefix) {
+			continue
 		}
-		if err := f([]byte(k), v); err != nil {
+		value, err := s.Get([]byte(key))
+		if errors.Is(err, errKeyNotFound) {
+			continue
+		}
+		if err != nil {
 			return visited, err
 		}
-		visited[k] = true
+		visited[key] = true
+		if err := f([]byte(key), value); err != nil {
+			return visited, err
+		}
 	}
-
-	if err := rows.Err(); err != nil {
-		return visited, fmt.Errorf("sqlite prefix rows: %w", err)
-	}
-
 	return visited, nil
 }
 
