@@ -54,7 +54,7 @@ The file begins with a 4096-byte version-1 header, followed by a reserved write-
 
 Each append fits entirely inside its WAL reservation. If necessary, pending entries are flushed, and a larger reservation is appended without overwriting existing tables. A durable end marker and payload are written before an entry header makes the entry visible to recovery. Recovery retains the append position of recovered records.
 
-Flushing appends a new table and replacement index after existing data, synchronizes and publishes the replacement header, then invalidates the old WAL start. Older table indexes remain intact until replacement metadata is published. Enumeration resolves table entries newest first, with the current memory table taking precedence.
+Flushing appends a new table and replacement index after existing data, synchronizes and publishes the replacement header, then invalidates the old WAL start. Older table indexes remain intact until replacement metadata is published. Enumeration resolves table entries newest first, with the current memory table taking precedence. Checked enumeration additionally verifies the published table count, table bounds and checksums, and individual entry lengths, checksums, key ordering, count, and key range. Incomplete or corrupt enumeration returns an error.
 
 Existing version-1 files remain readable. These guarantees do not repair data already overwritten by an earlier implementation or provide recovery from a torn single-copy file header.
 
