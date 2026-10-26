@@ -1007,8 +1007,8 @@ func (s *SingleFileLSM) Keys() [][]byte {
 
 	keysState := make(map[string]bool)
 
-	// Iterate SSTables from oldest to newest so newer entries win.
-	for i := 0; i < len(s.sstables); i++ {
+	// Visit newest SSTables first because iteration keeps the first version of each key.
+	for i := len(s.sstables) - 1; i >= 0; i-- {
 		meta := &s.sstables[i]
 		if err := s.iterateSSTable(meta, func(k, v []byte) error {
 			keysState[string(k)] = true
