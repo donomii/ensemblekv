@@ -276,8 +276,8 @@ func (lsm *SingleFileLSM) validateSSTable(meta *sstableMetadata) error {
 		return err
 	}
 
-	if meta.offset+meta.size > fileInfo.Size() {
-		return fmt.Errorf("SSTable extends beyond file size")
+	if meta.offset < singleFileHeaderSize || meta.size < 24 || meta.offset > fileInfo.Size() || meta.size > fileInfo.Size()-meta.offset {
+		return fmt.Errorf("SSTable offset=%d size=%d exceeds file bounds %d", meta.offset, meta.size, fileInfo.Size())
 	}
 
 	// Read and verify checksum
@@ -914,8 +914,13 @@ func (lsm *SingleFileLSM) MapFunc(f func([]byte, []byte) error) (map[string]bool
 func (lsm *SingleFileLSM) iterateSSTable(meta *sstableMetadata, f func([]byte, []byte) error, keys map[string]bool) error {
 	offset := meta.offset
 	endOffset := meta.offset + meta.size
+	entries := 0
+	var previousKey []byte
 
 	for offset < endOffset {
+		if endOffset-offset < 24 {
+			return fmt.Errorf("SSTable at %d has %d trailing bytes; expected an extent header", meta.offset, endOffset-offset)
+		}
 		// Read extent header (checksum(8) + keyLen(8) + valLen(8))
 		headerBuf := make([]byte, 24)
 		if _, err := lsm.file.ReadAt(headerBuf, offset); err != nil {
@@ -926,8 +931,9 @@ func (lsm *SingleFileLSM) iterateSSTable(meta *sstableMetadata, f func([]byte, [
 		keyLen := int64(binary.LittleEndian.Uint64(headerBuf[8:16]))
 		valLen := int64(binary.LittleEndian.Uint64(headerBuf[16:24]))
 
-		if keyLen <= 0 || keyLen > maxKeySize {
-			break
+		if keyLen <= 0 || keyLen > maxKeySize || keyLen > endOffset-offset-24 ||
+			valLen < tombstoneMarker || valLen > maxValueSize || max(valLen, 0) > endOffset-offset-24-keyLen {
+			return fmt.Errorf("invalid SSTable extent at %d: key length=%d value length=%d remaining=%d", offset, keyLen, valLen, endOffset-offset)
 		}
 
 		// Read key
@@ -937,25 +943,15 @@ func (lsm *SingleFileLSM) iterateSSTable(meta *sstableMetadata, f func([]byte, [
 		}
 
 		keyStr := string(entryKey)
-
-		// Skip if we've already seen this key (newer version in later SSTable or memtable)
-		if _, seen := keys[keyStr]; seen {
-			extentSize := int64(24) + keyLen
-			if valLen > 0 {
-				extentSize += valLen
-			}
-			offset += extentSize
-			continue
+		if (entries == 0 && !bytes.Equal(entryKey, meta.minKey)) ||
+			(entries > 0 && bytes.Compare(previousKey, entryKey) >= 0) {
+			return fmt.Errorf("SSTable at %d has invalid key order at %d: previous=%q current=%q", meta.offset, offset, previousKey, entryKey)
 		}
-
-		if valLen == tombstoneMarker {
-			keys[keyStr] = false
-			offset += int64(24) + keyLen
-			continue
-		}
+		previousKey = entryKey
+		entries++
 
 		// Read value
-		entryValue := make([]byte, valLen)
+		entryValue := make([]byte, max(valLen, 0))
 		if _, err := lsm.file.ReadAt(entryValue, offset+24+keyLen); err != nil {
 			return err
 		}
@@ -964,20 +960,26 @@ func (lsm *SingleFileLSM) iterateSSTable(meta *sstableMetadata, f func([]byte, [
 		checksumData := append(entryKey, entryValue...)
 		computedChecksum := uint64(crc32.ChecksumIEEE(checksumData))
 		if computedChecksum != checksum {
-			// Skip corrupt entries
-			extentSize := int64(24) + keyLen + valLen
-			offset += extentSize
-			continue
+			return fmt.Errorf("SSTable extent at %d checksum mismatch: stored=%d computed=%d", offset, checksum, computedChecksum)
 		}
 
-		// Call function
-		if err := f(entryKey, entryValue); err != nil {
-			return err
+		// Skip if we've already seen this key (newer version in later SSTable or memtable).
+		if _, seen := keys[keyStr]; !seen {
+			if valLen == tombstoneMarker {
+				keys[keyStr] = false
+			} else {
+				if err := f(entryKey, entryValue); err != nil {
+					return err
+				}
+				keys[keyStr] = true
+			}
 		}
-		keys[keyStr] = true
 
 		// Move to next extent
-		offset += int64(24) + keyLen + valLen
+		offset += int64(24) + keyLen + max(valLen, 0)
+	}
+	if entries != meta.numEntries || !bytes.Equal(previousKey, meta.maxKey) {
+		return fmt.Errorf("SSTable at %d has entries=%d last key=%q; metadata requires entries=%d last key=%q", meta.offset, entries, previousKey, meta.numEntries, meta.maxKey)
 	}
 
 	return nil
@@ -1103,4 +1105,46 @@ func (s *SingleFileLSM) Keys() [][]byte {
 		}
 	}
 	return keys
+}
+
+func (s *SingleFileLSM) keysForCompaction() ([][]byte, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	if s.closed {
+		return nil, fmt.Errorf("SingleFileLSM compaction source %s is closed", s.filePath)
+	}
+	var header [40]byte
+	if _, err := s.file.ReadAt(header[:], 0); err != nil {
+		return nil, fmt.Errorf("read SingleFileLSM compaction header: %w", err)
+	}
+	if binary.LittleEndian.Uint32(header[:4]) != singleFileMagic ||
+		binary.LittleEndian.Uint32(header[4:8]) != singleFileVersion ||
+		binary.LittleEndian.Uint32(header[36:40]) != crc32.ChecksumIEEE(header[:36]) {
+		return nil, fmt.Errorf("SingleFileLSM compaction source %s has an invalid header", s.filePath)
+	}
+	tableCount := int(binary.LittleEndian.Uint32(header[32:36]))
+	indexOffset := int64(binary.LittleEndian.Uint64(header[24:32]))
+	if tableCount != len(s.sstables) || indexOffset != s.indexOffset {
+		return nil, fmt.Errorf("SingleFileLSM compaction source loaded %d tables at index %d; header requires %d tables at index %d", len(s.sstables), s.indexOffset, tableCount, indexOffset)
+	}
+	states := make(map[string]bool)
+	for key, value := range s.memTable {
+		states[key] = value != nil
+	}
+	for index := len(s.sstables) - 1; index >= 0; index-- {
+		meta := &s.sstables[index]
+		if err := s.validateSSTable(meta); err != nil {
+			return nil, fmt.Errorf("validate compaction SSTable %d: %w", index, err)
+		}
+		if err := s.iterateSSTable(meta, func(key, value []byte) error { return nil }, states); err != nil {
+			return nil, fmt.Errorf("enumerate compaction SSTable %d: %w", index, err)
+		}
+	}
+	var keys [][]byte
+	for key, exists := range states {
+		if exists {
+			keys = append(keys, []byte(key))
+		}
+	}
+	return keys, nil
 }
