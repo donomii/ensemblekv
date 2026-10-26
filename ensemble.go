@@ -592,10 +592,14 @@ func (s *EnsembleKv) ConcurrentCompact() error {
 		}
 
 		// Register compact store for dual-writes
-		var originalStore KvLike
+		var keys [][]byte
 		err = s.runInSubstoreWithErr(i, func(substore KvLike) error {
+			var err error
+			keys, err = compactionKeys(substore)
+			if err != nil {
+				return fmt.Errorf("enumerate substore %d: %w", i, err)
+			}
 			s.compactingStores.Store(i, compactStore)
-			originalStore = substore
 			return nil
 		})
 		if err != nil {
@@ -604,7 +608,6 @@ func (s *EnsembleKv) ConcurrentCompact() error {
 		}
 
 		// Iterate over keys from original store
-		keys := originalStore.Keys()
 		for _, key := range keys {
 			// Check key existence in target store -> exists -> next key
 			if compactStore.Exists(key) {

@@ -22,6 +22,8 @@ An Ensemble store has a fixed number of substores. A key hash modulo that count 
 
 Operations on one substore are serialized. Explicit flushing visits every substore and reports all failures. A background worker periodically flushes dirty stores using the same substore locks. Close waits for compaction, stops the worker, closes all active substores, and reports close errors. Requests check the lifecycle state after acquiring their substore lock. Initialization requires a positive substore count, reports metadata persistence failures, and closes previously opened substores if a later initialization step fails. Compaction copies each substore into a sibling `.compacting` directory, switches directories through a `.old` name, then removes the old copy. This specification does not assert crash-atomic or failure-atomic compaction; that path requires separate validation.
 
+Compaction enumerates supported local backends with an error-reporting path before registering a replacement. Enumeration validates backend storage boundaries and recursively resolves Ensemble, LineLSM, TreeLSM, and StarLSM keys. Incomplete TreeLSM and StarLSM child sets are rejected. Custom stores must provide `KeysWithError() ([][]byte, error)` returning all live keys or an error. Backends without reliable enumeration are rejected. The public `KvLike` interface is unchanged.
+
 ## LineLSM
 
 LineLSM uses four ordered tiers. Lower tiers are newer. Backing keys have `d:` prefixes for data and `t:` prefixes for deletion markers; user keys may themselves contain either prefix. Deletion markers have a non-empty value so backends interpreting nil as deletion retain them.
