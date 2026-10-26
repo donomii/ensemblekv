@@ -20,7 +20,7 @@ EnsembleKV is a Go library for storing byte-string keys and values in local data
 
 An Ensemble store has a fixed number of substores. A key hash modulo that count determines its substore. The directory contains `metadata.json` with generation, substore count, and total-key bookkeeping, and a generation directory containing numbered substore directories. The count is restored from metadata when reopening.
 
-Operations on one substore are serialized. Explicit flushing visits the substores, and a background worker periodically flushes stores marked dirty. Compaction copies each substore into a sibling `.compacting` directory, switches directories through a `.old` name, then removes the old copy. This specification does not assert crash-atomic or failure-atomic compaction; that path requires separate validation.
+Operations on one substore are serialized. Explicit flushing visits every substore and reports all failures. A background worker periodically flushes dirty stores using the same substore locks. Close waits for compaction, stops the worker, closes all active substores, and reports close errors. Requests check the lifecycle state after acquiring their substore lock. Initialization requires a positive substore count, reports metadata persistence failures, and closes previously opened substores if a later initialization step fails. Compaction copies each substore into a sibling `.compacting` directory, switches directories through a `.old` name, then removes the old copy. This specification does not assert crash-atomic or failure-atomic compaction; that path requires separate validation.
 
 ## LineLSM
 
