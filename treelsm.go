@@ -1,7 +1,7 @@
 package ensemblekv
 
 import (
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +17,8 @@ type TreeLSM struct {
 	subStores    map[string]*TreeLSM // Substores for each prefix
 	prefix       string              // Prefix for the current store
 	isReadOnly   bool
+	closed       bool
+	splitFailure error
 	createStore  CreatorFunc
 	blockSize    int64 // Size of each block
 	fileSize     int64 // MAximum file size for the current store
@@ -43,6 +45,10 @@ func NewTreeLSM(
 	createStore CreatorFunc,
 
 ) (*TreeLSM, error) {
+	return newTreeLSM(directory, blockSize, fileSize, level, createStore, "")
+}
+
+func newTreeLSM(directory string, blockSize, fileSize, level int64, createStore CreatorFunc, prefix string) (*TreeLSM, error) {
 	store := &TreeLSM{
 		directory:   directory,
 		subStores:   make(map[string]*TreeLSM),
@@ -50,15 +56,19 @@ func NewTreeLSM(
 		blockSize:   blockSize,
 		fileSize:    fileSize,
 		level:       level,
+		prefix:      prefix,
 		hashFunc:    defaultHashFunc, // Use the same hash function as EnsembleKV
 	}
 
 	if err := os.MkdirAll(directory, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
+	if _, err := inspectSplit(directory, store.splitLayout()); err != nil {
+		return nil, err
+	}
 
 	// Create or open the current store
-	current, err := createStore(filepath.Join(directory, "current"), blockSize, fileSize) //FIXME filesize
+	current, err := openSplitCurrent(directory, blockSize, fileSize, createStore)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create store: %w", err)
 	}
@@ -66,7 +76,7 @@ func NewTreeLSM(
 
 	// Load existing substores if any
 	if err := store.loadSubStores(); err != nil {
-		return nil, fmt.Errorf("failed to load substores: %w", err)
+		return nil, errors.Join(fmt.Errorf("failed to load substores: %w", err), store.Close())
 	}
 
 	// If there are any substores, set the current store to read-only
@@ -151,6 +161,9 @@ func (t *TreeLSM) Put(key, value []byte) error {
 
 // LockFreePut stores a key-value pair without locking
 func (t *TreeLSM) LockFreePut(key, value []byte) error {
+	if err := t.available(); err != nil {
+		return err
+	}
 	debugf("TreeLSM: Put: %s", t.hashKey(key))
 	maxValueSize := int(0.9 * float64(t.fileSize))
 
@@ -177,9 +190,12 @@ func (t *TreeLSM) LockFreePut(key, value []byte) error {
 	}
 
 	// Check if we need to split
-	if t.currentStore.Size()+int64(len(value)) > int64(0.9*float64(t.fileSize)) {
-		debugf("Splitting store %s because value size %v is greater than 90%% of file size %v\n", t.directory, len(value), maxValueSize)
-		debugf("Splitting store %s because value size %v is greater than 90%% of file size %v\n", t.directory, len(value), maxValueSize)
+	shouldSplit, err := splitNeeded(t.currentStore, key, value, int64(0.9*float64(t.fileSize)))
+	if err != nil {
+		return err
+	}
+	if shouldSplit && t.level < 16 {
+		logTreeSplit(t.directory, maxValueSize, key, value)
 		if err := t.split(); err != nil {
 			return fmt.Errorf("failed to split store: %w", err)
 		}
@@ -195,6 +211,9 @@ func (t *TreeLSM) Get(key []byte) ([]byte, error) {
 	debugf("TreeLSM: Get: %s", t.hashKey(key))
 	t.mutex.RLock()
 	defer t.mutex.RUnlock()
+	if err := t.available(); err != nil {
+		return nil, err
+	}
 
 	// Hash the key first
 	hashedKey := t.hashKey(key)
@@ -206,48 +225,86 @@ func (t *TreeLSM) Get(key []byte) ([]byte, error) {
 		debugf("TreeLSM: Get: %s, substore exists for prefix: %s", t.hashKey(key), prefix)
 		return subStore.Get(key)
 	}
+	if t.isReadOnly {
+		return nil, fmt.Errorf("TreeLSM store %s is missing committed child %s", t.directory, prefix)
+	}
 
 	debugf("TreeLSM: Get: %s, key not found in substores for prefix %s", t.hashKey(key), prefix)
 	// Then check current store
-	value, err := t.currentStore.Get(key)
-	if err == nil {
-		return value, nil
-	}
-
-	debugf("TreeLSM: Get: %s, key not found in current store", t.hashKey(key))
-	return nil, fmt.Errorf("key not found")
+	return t.currentStore.Get(key)
 }
 
 // split creates substores and redistributes data
-func (t *TreeLSM) split() error {
+func (t *TreeLSM) split() (result error) {
 	debugf("Splitting store %s into substores\n", t.directory)
+	if err := t.available(); err != nil {
+		return err
+	}
+	if t.isReadOnly {
+		return fmt.Errorf("store %s already has a committed split", t.directory)
+	}
 	if t.level >= 16 {
 		return fmt.Errorf("cannot split store %q beyond the 16-character hash", t.directory)
 	}
+	path, err := prepareSplit(t.directory, t.splitLayout(), t.currentStore)
+	if err != nil {
+		return err
+	}
+	children := make(map[string]*TreeLSM)
+	defer func() {
+		for _, child := range children {
+			result = errors.Join(result, child.Close())
+		}
+	}()
 	// Create subdirectories for each hex prefix
 	for i := 0; i < 16; i++ {
 		p := fmt.Sprintf("%s%x", t.prefix, i)
 		dir := fmt.Sprintf("substore_%x", p)
-		subDir := filepath.Join(t.directory, dir)
+		subDir := filepath.Join(path, dir)
 
-		subStore, err := NewTreeLSM(subDir, t.blockSize, t.fileSize, t.level+1, t.createStore)
+		subStore, err := newTreeLSM(subDir, t.blockSize, t.fileSize, t.level+1, t.createStore, p)
 		if err != nil {
 			return fmt.Errorf("failed to create substore %s: %w", dir, err)
 		}
 
-		subStore.prefix = p
-		t.subStores[p] = subStore
+		children[p] = subStore
 	}
 
 	// Redistribute existing data
-	_, err := t.currentStore.MapFunc(func(key, value []byte) error {
+	err = copySplit(t.currentStore, path, func(key []byte) KvLike {
 		hashedKey := t.hashKey(key)
 		prefix := t.getPrefixForKey(hashedKey)
-		subStore := t.subStores[prefix]
-		return subStore.currentStore.Put(key, value)
+		if child := children[prefix]; child != nil {
+			return child.currentStore
+		}
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to redistribute data: %w", err)
+	}
+	for _, child := range children {
+		if err := child.Flush(); err != nil {
+			return err
+		}
+	}
+	var closeErr error
+	for _, child := range children {
+		closeErr = errors.Join(closeErr, child.Close())
+	}
+	children = nil
+	if closeErr != nil {
+		return closeErr
+	}
+	published, err := publishSplit(t.directory)
+	if err != nil {
+		if published {
+			t.splitFailure = err
+		}
+		return err
+	}
+	if err := t.loadSubStores(); err != nil {
+		t.splitFailure = err
+		return err
 	}
 
 	// Mark current store as read-only
@@ -259,6 +316,9 @@ func (t *TreeLSM) split() error {
 func (t *TreeLSM) Delete(key []byte) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
+	if err := t.available(); err != nil {
+		return err
+	}
 
 	// Hash the key first
 	hashedKey := t.hashKey(key)
@@ -279,6 +339,9 @@ func (t *TreeLSM) Delete(key []byte) error {
 func (t *TreeLSM) Exists(key []byte) bool {
 	t.mutex.RLock()
 	defer t.mutex.RUnlock()
+	if t.available() != nil {
+		return false
+	}
 
 	// Hash the key first
 	hashedKey := t.hashKey(key)
@@ -287,6 +350,9 @@ func (t *TreeLSM) Exists(key []byte) bool {
 	prefix := t.getPrefixForKey(hashedKey)
 	if subStore, exists := t.subStores[prefix]; exists {
 		return subStore.Exists(key)
+	}
+	if t.isReadOnly {
+		return false
 	}
 
 	// Then current store
@@ -302,35 +368,21 @@ func (t *TreeLSM) Exists(key []byte) bool {
 
 // loadSubStores scans for and loads existing substores
 func (t *TreeLSM) loadSubStores() error {
-	entries, err := os.ReadDir(t.directory)
+	path, err := inspectSplit(t.directory, t.splitLayout())
 	if err != nil {
-		return fmt.Errorf("failed to read directory: %w", err)
+		return err
 	}
-
-	for _, entry := range entries {
-		if entry.IsDir() && strings.HasPrefix(entry.Name(), "substore_") {
-			encodedPrefix := strings.TrimPrefix(entry.Name(), "substore_")
-			decodedPrefix, err := hex.DecodeString(encodedPrefix)
-			if err != nil {
-				return fmt.Errorf("invalid substore directory %q: %w", entry.Name(), err)
-			}
-			prefix := string(decodedPrefix)
-			if len(prefix) != int(t.level+1) || !isHexString(prefix) {
-				return fmt.Errorf("invalid substore prefix %q at level %d", prefix, t.level)
-			}
-			subStore, err := NewTreeLSM(
-				filepath.Join(t.directory, entry.Name()),
-				t.blockSize,
-				t.fileSize,
-				t.level+1,
-				t.createStore,
-			)
-			if err != nil {
-				return fmt.Errorf("failed to load substore %s: %w", entry.Name(), err)
-			}
-			subStore.prefix = prefix
-			t.subStores[prefix] = subStore
+	if path == "" {
+		return nil
+	}
+	for partition := 0; partition < 16; partition++ {
+		prefix := fmt.Sprintf("%s%x", t.prefix, partition)
+		childPath := filepath.Join(path, splitChildName("tree", t.prefix, partition))
+		subStore, err := newTreeLSM(childPath, t.blockSize, t.fileSize, t.level+1, t.createStore, prefix)
+		if err != nil {
+			return fmt.Errorf("failed to load substore %s: %w", childPath, err)
 		}
+		t.subStores[prefix] = subStore
 	}
 
 	return nil
@@ -345,6 +397,9 @@ func isHexString(s string) bool {
 func (t *TreeLSM) Flush() error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
+	if err := t.available(); err != nil {
+		return err
+	}
 
 	if err := t.currentStore.Flush(); err != nil {
 		return err
@@ -364,16 +419,28 @@ func (t *TreeLSM) Close() error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	if err := t.currentStore.Close(); err != nil {
-		return err
+	if t.closed {
+		return nil
 	}
-
+	t.closed = true
+	err := t.currentStore.Close()
 	for _, subStore := range t.subStores {
-		if err := subStore.Close(); err != nil {
-			return err
-		}
+		err = errors.Join(err, subStore.Close())
 	}
+	return err
+}
 
+func (t *TreeLSM) splitLayout() splitLayout {
+	return splitLayout{Version: 1, Kind: "tree", Prefix: t.prefix, Depth: t.level}
+}
+
+func (t *TreeLSM) available() error {
+	if t.closed {
+		return fmt.Errorf("TreeLSM store %s is closed", t.directory)
+	}
+	if t.splitFailure != nil {
+		return fmt.Errorf("TreeLSM store %s needs reopening after split publication failed: %w", t.directory, t.splitFailure)
+	}
 	return nil
 }
 

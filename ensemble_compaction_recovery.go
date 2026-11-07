@@ -91,7 +91,7 @@ func (inventory *compactionRecoveryInventory) inspectStore(path string) error {
 	branch := false
 	for _, child := range inventory.children[path] {
 		name := filepath.Base(child)
-		if name == "current" || strings.HasPrefix(name, "substore_") || (len(name) == 1 && isHexString(name)) {
+		if name == "current" || name == ".split" || strings.HasPrefix(name, "substore_") || (len(name) == 1 && isHexString(name)) {
 			branch = true
 		}
 	}
@@ -117,6 +117,13 @@ func (inventory *compactionRecoveryInventory) inspectStore(path string) error {
 		}
 		for _, child := range inventory.children[path] {
 			name := filepath.Base(child)
+			if name == ".split" {
+				for _, partition := range inventory.children[child] {
+					if err := inventory.inspectStore(partition); err != nil {
+						return err
+					}
+				}
+			}
 			if strings.HasPrefix(name, "substore_") || (len(name) == 1 && isHexString(name)) {
 				if err := inventory.inspectStore(child); err != nil {
 					return err

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	_ "log"
+	"math"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -26,7 +27,7 @@ type KvLike interface {
 	Put(key []byte, val []byte) error                                                   // Put stores a key-value pair.  If the key already exists, it overwrites the value.
 	Exists(key []byte) bool                                                             // Exists checks if a key exists in the store.  Returns true if the key exists, false otherwise.
 	Delete(key []byte) error                                                            // Delete removes a key-value pair from the store.  Behaviour might vary by store.
-	Size() int64                                                                        // Size returns the size, in bytes, used by the store.
+	Size() int64                                                                        // Size retains backend-dependent units; use StoreMetrics for explicit counts and bytes.
 	Flush() error                                                                       // Flush ensures all data is written to disk.  Behaviour might vary by store.
 	Close() error                                                                       // Close closes the store and releases any resources.  The store becomes unusable after this call.
 	MapFunc(f func([]byte, []byte) error) (map[string]bool, error)                      // MapFunc applies a function to all key-value pairs in the store.  The function should return an error if it fails.  Some stores may call f multiple times for the same key, with each call being a different past value (usually caused by overwrites in an LSM store).  Returns a map of keys that were processed, where the value indicates if the key exists (true) or was deleted (false).
@@ -71,6 +72,8 @@ type EnsembleKv struct {
 	substoreLocks    *syncmap.SyncMap[int, *sync.Mutex]
 	compactingStores *syncmap.SyncMap[int, *compactionState]
 	unavailable      *syncmap.SyncMap[int, error]
+	countErrors      *syncmap.SyncMap[int, error]
+	metadataMu       sync.Mutex
 	stopWorker       chan struct{}
 	workerDone       chan struct{}
 }
@@ -89,6 +92,7 @@ func NewEnsembleKv(directory string, N, maxBlock, maxKeys, filesie int64, create
 		substoreLocks:    syncmap.NewSyncMap[int, *sync.Mutex](),
 		compactingStores: syncmap.NewSyncMap[int, *compactionState](),
 		unavailable:      syncmap.NewSyncMap[int, error](),
+		countErrors:      syncmap.NewSyncMap[int, error](),
 		stopWorker:       make(chan struct{}),
 		workerDone:       make(chan struct{}),
 	}
@@ -150,6 +154,7 @@ func (s *EnsembleKv) flushWorker() {
 
 // setup initializes the store by creating the directory structure and substores.
 func (s *EnsembleKv) setup() error {
+	s.totalKeys.Store(0)
 	genPath := filepath.Join(s.directory, fmt.Sprintf("%d", s.generation))
 	if err := os.MkdirAll(genPath, os.ModePerm); err != nil {
 		return err
@@ -169,6 +174,14 @@ func (s *EnsembleKv) setup() error {
 			return err
 		}
 		s.substores.Store(int(i), substore)
+		count, err := StoreCount(substore)
+		if err != nil {
+			return fmt.Errorf("count existing keys in substore %d: %w", i, err)
+		}
+		if count < 0 || s.totalKeys.Load() > math.MaxInt64-count {
+			return fmt.Errorf("invalid key count from substore %d: received %d after %d keys; expected a nonnegative total through %d", i, count, s.totalKeys.Load(), int64(math.MaxInt64))
+		}
+		s.totalKeys.Add(count)
 	}
 
 	return nil
@@ -322,7 +335,6 @@ func clampString(in string, length int) string {
 
 // Put stores a key-value pair in the appropriate substore.
 
-// Adjusted Put method to track the total number of keys and trigger rebalance if needed.
 func (s *EnsembleKv) Put(key []byte, val []byte) error {
 	if !s.running.Load() {
 		return fmt.Errorf("store is closed")
@@ -332,16 +344,17 @@ func (s *EnsembleKv) Put(key []byte, val []byte) error {
 
 	return s.runInSubstoreWithErr(index, func(substore KvLike) error {
 		state, compacting := s.compactingStores.Load(index)
-		if err := substore.Put(key, val); err != nil {
+		if err := s.countMutation(index, substore, key, func() error { return substore.Put(key, val) }); err != nil {
 			if compacting {
 				state.failure = errors.Join(state.failure, err)
 			}
 			return err
 		}
-		s.flushStore.Store(index, true)
-		s.totalKeys.Add(1)
 		if compacting && state.failure == nil {
-			state.keys[string(key)] = compactionCopied
+			if err := state.keys.set(key, compactionCopied); err != nil {
+				state.failure = err
+				return err
+			}
 			if err := state.target.Put(key, val); err != nil {
 				state.failure = fmt.Errorf("dual-write failed for substore %d, key %x: %w", index, key, err)
 				return state.failure
@@ -362,17 +375,21 @@ func (s *EnsembleKv) Delete(key []byte) error {
 
 	return s.runInSubstoreWithErr(index, func(substore KvLike) error {
 		state, compacting := s.compactingStores.Load(index)
-		if err := substore.Delete(key); err != nil {
+		if err := s.countMutation(index, substore, key, func() error { return substore.Delete(key) }); err != nil {
 			if compacting {
 				state.failure = errors.Join(state.failure, err)
 			}
 			return err
 		}
-		s.flushStore.Store(index, true)
-		s.totalKeys.Add(-1)
 		if compacting && state.failure == nil {
-			previous := state.keys[string(key)]
-			state.keys[string(key)] = compactionDeleted
+			previous, err := state.keys.get(key)
+			if err == nil {
+				err = state.keys.set(key, compactionDeleted)
+			}
+			if err != nil {
+				state.failure = err
+				return err
+			}
 			if previous == compactionCopied {
 				if err := state.target.Delete(key); err != nil {
 					state.failure = fmt.Errorf("dual-delete failed for substore %d, key %x: %w", index, key, err)
@@ -418,7 +435,7 @@ func (s *EnsembleKv) Flush() error {
 			result = errors.Join(result, fmt.Errorf("flush substore %d: %w", id, err))
 		}
 	}
-	return result
+	return errors.Join(result, s.saveMetadata())
 }
 
 // Close closes all substores.
@@ -430,7 +447,7 @@ func (s *EnsembleKv) Close() error {
 	}
 	close(s.stopWorker)
 	<-s.workerDone
-	return s.closeSubstores()
+	return errors.Join(s.closeSubstores(), s.saveMetadata())
 }
 
 func (s *EnsembleKv) closeSubstores() error {
@@ -456,6 +473,8 @@ type Metadata struct {
 
 // saveMetadata writes the current store metadata to a file.
 func (s *EnsembleKv) saveMetadata() error {
+	s.metadataMu.Lock()
+	defer s.metadataMu.Unlock()
 	metadata := Metadata{
 		Generation: s.generation,
 		N:          s.N,
@@ -466,7 +485,31 @@ func (s *EnsembleKv) saveMetadata() error {
 		return err
 	}
 	metadataPath := filepath.Join(s.directory, "metadata.json")
-	return ioutil.WriteFile(metadataPath, data, 0644)
+	mode := os.FileMode(0644)
+	if info, err := os.Stat(metadataPath); err == nil {
+		mode = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	file, err := os.CreateTemp(s.directory, ".ensemble-metadata-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+	if err := file.Chmod(mode); err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	if err := errors.Join(file.Sync(), file.Close()); err != nil {
+		return err
+	}
+	if err := os.Rename(file.Name(), metadataPath); err != nil {
+		return err
+	}
+	return syncCompactionPath(s.directory)
 }
 
 // loadMetadata reads the store metadata from a file.
@@ -516,7 +559,7 @@ func (s *EnsembleKv) MapFunc(f func(key []byte, value []byte) error) (map[string
 	return visited, nil
 }
 
-// Size returns the total number of keys in the store.
+// Size sums the legacy backend-dependent Size results; use Count or SizeBytes for explicit units.
 func (s *EnsembleKv) Size() int64 {
 
 	var total int64

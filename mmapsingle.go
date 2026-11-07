@@ -172,6 +172,7 @@ func (kv *MmapSingleKV) ensureSpace(needed int64) error {
 	if err := syscall.Munmap(kv.data); err != nil {
 		return fmt.Errorf("failed to munmap: %w", err)
 	}
+	kv.data = nil
 
 	// Grow the file
 	if err := kv.file.Truncate(newSize); err != nil {
@@ -190,6 +191,9 @@ func (kv *MmapSingleKV) ensureSpace(needed int64) error {
 }
 
 func (kv *MmapSingleKV) writeEntry(key, value []byte, isDelete bool) error {
+	if kv.data == nil {
+		return fmt.Errorf("MmapSingle store %s has no active mapping", kv.directory)
+	}
 	timestamp := nowNanos()
 	keyLen := uint32(len(key))
 	valueLen := uint32(len(value))
@@ -239,9 +243,12 @@ func (kv *MmapSingleKV) Get(key []byte) ([]byte, error) {
 	kv.mutex.RLock()
 	defer kv.mutex.RUnlock()
 
+	if kv.data == nil {
+		return nil, fmt.Errorf("MmapSingle store %s has no active mapping", kv.directory)
+	}
 	offset, exists := kv.index[string(key)]
 	if !exists {
-		return nil, fmt.Errorf("key not found")
+		return nil, fmt.Errorf("MmapSingle key %q: %w", key, errKeyNotFound)
 	}
 
 	// Read entry at offset using unsafe for speed
@@ -249,7 +256,7 @@ func (kv *MmapSingleKV) Get(key []byte) ([]byte, error) {
 	valueLen := *(*uint32)(unsafe.Pointer(&kv.data[offset+12]))
 
 	if valueLen == deletedMarker {
-		return nil, fmt.Errorf("key not found")
+		return nil, fmt.Errorf("MmapSingle key %q deleted: %w", key, errKeyNotFound)
 	}
 
 	valueOffset := offset + headerSize + int64(keyLen)
@@ -315,6 +322,9 @@ func (kv *MmapSingleKV) Flush() error {
 	kv.mutex.Lock()
 	defer kv.mutex.Unlock()
 
+	if kv.data == nil {
+		return fmt.Errorf("MmapSingle store %s has no active mapping", kv.directory)
+	}
 	if kv.offset > 0 {
 		if err := unix.Msync(kv.data[:kv.offset], unix.MS_SYNC); err != nil {
 			return fmt.Errorf("failed to msync: %w", err)
@@ -334,8 +344,11 @@ func (kv *MmapSingleKV) Close() error {
 	}
 
 	// Unmap
-	if err := syscall.Munmap(kv.data); err != nil {
-		return fmt.Errorf("failed to munmap: %w", err)
+	if kv.data != nil {
+		if err := syscall.Munmap(kv.data); err != nil {
+			return fmt.Errorf("failed to munmap: %w", err)
+		}
+		kv.data = nil
 	}
 
 	// Close file

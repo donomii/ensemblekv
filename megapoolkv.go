@@ -621,9 +621,12 @@ func (p *MegaPool) Get(key []byte) ([]byte, error) {
 }
 
 func (p *MegaPool) get(key []byte) ([]byte, error) {
+	if p.data == nil {
+		return nil, fmt.Errorf("MegaPool store %s is closed", p.path)
+	}
 	nodeOffset := p.search(p.header.BtreeRoot, key, 0)
 	if nodeOffset < 1 {
-		return nil, os.ErrNotExist // Not found
+		return nil, fmt.Errorf("MegaPool key %q: %w", key, errors.Join(errKeyNotFound, os.ErrNotExist)) // Not found
 	}
 	p.enforceBounds(nodeOffset)
 	node := p.nodeAt(nodeOffset)

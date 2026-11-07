@@ -521,24 +521,21 @@ func (s *ExtentKeyValStore) forwardScanForKey(key []byte) ([]byte, bool, error) 
 
 	found, offset, err := s.searchDbForKeyExists(key, s.keysIndex, s.keysFile)
 	if err != nil {
-		if EnableIndexCaching {
-			s.existsCache.Store(string(key), false)
-		}
-		return nil, false, fmt.Errorf("extentkv.forwardScanForKey: not found: %w", err)
+		return nil, false, fmt.Errorf("extentkv.forwardScanForKey: search key %q: %w", key, err)
 	}
 
 	if !found {
 		if EnableIndexCaching {
 			s.existsCache.Store(string(key), false)
 		}
-		return nil, false, fmt.Errorf("extentkv.forwardScanForKey: key not found or deleted")
+		return nil, false, fmt.Errorf("extentkv.forwardScanForKey: key %q absent or deleted: %w", key, errKeyNotFound)
 	}
 
 	if keysIndexFileLength == offset {
 		if EnableIndexCaching {
 			s.existsCache.Store(string(key), false)
 		}
-		return nil, false, fmt.Errorf("extentkv.forwardScanForKey: key not found or deleted because offset is at end of file")
+		return nil, false, fmt.Errorf("extentkv.forwardScanForKey: key %q points at EOF offset %d", key, offset)
 	}
 
 	debugln("forwardScanForKey: Retrieving value for key", trimTo40(key), "at offset", offset)
@@ -827,7 +824,7 @@ func (s *ExtentKeyValStore) Get(key []byte) ([]byte, error) {
 		if exists {
 			s.cacheHits++ // key was found in the cache map (even though we still go to disk for value)
 			if !state {
-				return nil, errors.New("key marked as not present in cache")
+				return nil, fmt.Errorf("Extent key %q marked absent in cache: %w", key, errKeyNotFound)
 			}
 		} else {
 			s.cacheMisses++
@@ -846,7 +843,7 @@ func (s *ExtentKeyValStore) Get(key []byte) ([]byte, error) {
 				end = end * -1
 			}
 			if start < 0 {
-				return nil, errors.New("key marked as not present in cache")
+				return nil, fmt.Errorf("Extent key %q marked absent in cache: %w", key, errKeyNotFound)
 			}
 			if _, err := s.valuesFile.Seek(start, 0); err != nil {
 				return nil, fmt.Errorf("seek Extent value for key %x in %s at %d: %w", key, s.valuesFile.Name(), start, err)
@@ -864,7 +861,7 @@ func (s *ExtentKeyValStore) Get(key []byte) ([]byte, error) {
 		return nil, fmt.Errorf("extentkv.Get: %w", err)
 	}
 	if !found {
-		return nil, fmt.Errorf("extentkv.Get: key not found")
+		return nil, fmt.Errorf("extentkv.Get: key %q: %w", key, errKeyNotFound)
 	}
 
 	return val, nil
@@ -1387,7 +1384,7 @@ func (s *ExtentKeyValStore) LockFreeGet(key []byte) ([]byte, error) {
 	for {
 		keyIndexPosStart = keyIndexPosStart - 8
 		if keyIndexPosStart < 0 {
-			return nil, fmt.Errorf("key not found after searching to start of file")
+			return nil, fmt.Errorf("Extent key %q absent after searching to start of file: %w", key, errKeyNotFound)
 		}
 
 		// Read key data using cache if available
@@ -1403,7 +1400,7 @@ func (s *ExtentKeyValStore) LockFreeGet(key []byte) ([]byte, error) {
 		// Check if we found the key
 		if bytes.Equal(key, data) {
 			if deleted {
-				return nil, fmt.Errorf("key has been deleted at entry %d", keyIndexPosStart/8)
+				return nil, fmt.Errorf("Extent key %q deleted at entry %d: %w", key, keyIndexPosStart/8, errKeyNotFound)
 			}
 			found = true
 			break
@@ -1411,7 +1408,7 @@ func (s *ExtentKeyValStore) LockFreeGet(key []byte) ([]byte, error) {
 	}
 
 	if !found {
-		return nil, fmt.Errorf("key not found after searching to start of file")
+		return nil, fmt.Errorf("Extent key %q absent after searching to start of file: %w", key, errKeyNotFound)
 	}
 
 	// Read value data using cache if available

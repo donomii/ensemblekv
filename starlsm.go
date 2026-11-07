@@ -1,6 +1,7 @@
 package ensemblekv
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,6 +23,8 @@ type StarLSM struct {
 	prefix       string
 	depth        int64 // Current depth in the tree
 	isReadOnly   bool
+	closed       bool
+	splitFailure error
 	createStore  CreatorFunc
 	blockSize    int64
 	fileSize     int64
@@ -55,9 +58,12 @@ func newStarLSM(directory string, blockSize, fileSize int64, createStore Creator
 	if err := os.MkdirAll(directory, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
+	if _, err := inspectSplit(directory, store.splitLayout()); err != nil {
+		return nil, err
+	}
 
 	// Create or open the current store
-	current, err := createStore(filepath.Join(directory, "current"), blockSize, fileSize) //FIXME filesize
+	current, err := openSplitCurrent(directory, blockSize, fileSize, createStore)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create store: %w", err)
 	}
@@ -65,7 +71,7 @@ func newStarLSM(directory string, blockSize, fileSize int64, createStore Creator
 
 	// Load existing substores if any
 	if err := store.loadSubStores(); err != nil {
-		return nil, fmt.Errorf("failed to load substores: %w", err)
+		return nil, errors.Join(fmt.Errorf("failed to load substores: %w", err), store.Close())
 	}
 	store.isReadOnly = len(store.subStores) > 0
 
@@ -148,6 +154,9 @@ func (s *StarLSM) Put(key, value []byte) error {
 }
 
 func (s *StarLSM) put(key, value []byte) error {
+	if err := s.available(); err != nil {
+		return err
+	}
 	hashedKey := s.hashKey(key)
 
 	if s.isReadOnly {
@@ -160,7 +169,11 @@ func (s *StarLSM) put(key, value []byte) error {
 	}
 
 	// Check if we need to split
-	if s.currentStore.Size() > starMaxStoreSize {
+	shouldSplit, err := splitNeeded(s.currentStore, key, value, starMaxStoreSize)
+	if err != nil {
+		return err
+	}
+	if shouldSplit && s.depth < 16 {
 		if err := s.split(hashedKey); err != nil {
 			return fmt.Errorf("failed to split store: %w", err)
 		}
@@ -172,34 +185,76 @@ func (s *StarLSM) put(key, value []byte) error {
 }
 
 // split creates substores for the next level of hash precision
-func (s *StarLSM) split(hashedKey string) error {
+func (s *StarLSM) split(hashedKey string) (result error) {
+	if err := s.available(); err != nil {
+		return err
+	}
+	if s.isReadOnly {
+		return fmt.Errorf("store %s already has a committed split", s.directory)
+	}
 	if s.depth >= 16 {
 		return fmt.Errorf("cannot split store %q beyond the 16-character hash", s.directory)
 	}
 	nextDepth := s.depth + 1
+	path, err := prepareSplit(s.directory, s.splitLayout(), s.currentStore)
+	if err != nil {
+		return err
+	}
+	children := make(map[string]*StarLSM)
+	defer func() {
+		for _, child := range children {
+			result = errors.Join(result, child.Close())
+		}
+	}()
 
 	// Create subdirectories for each hex character at this depth
 	for i := 0; i < 16; i++ {
 		prefix := fmt.Sprintf("%s%x", s.prefix, i)
-		subDir := filepath.Join(s.directory, fmt.Sprintf("%x", i))
+		subDir := filepath.Join(path, fmt.Sprintf("%x", i))
 
 		subStore, err := newStarLSM(subDir, s.blockSize, s.fileSize, s.createStore, s, prefix, nextDepth)
 		if err != nil {
 			return fmt.Errorf("failed to create substore %s: %w", prefix, err)
 		}
 
-		s.subStores[prefix] = subStore
+		children[prefix] = subStore
 	}
 
 	// Redistribute existing data based on the next character in their hash
-	_, err := s.currentStore.MapFunc(func(key, value []byte) error {
+	err = copySplit(s.currentStore, path, func(key []byte) KvLike {
 		keyHash := s.hashKey(key)
 		prefix := s.getPrefixAtDepth(keyHash, nextDepth-1)
-		subStore := s.subStores[prefix]
-		return subStore.currentStore.Put(key, value)
+		if child := children[prefix]; child != nil {
+			return child.currentStore
+		}
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to redistribute data: %w", err)
+	}
+	for _, child := range children {
+		if err := child.Flush(); err != nil {
+			return err
+		}
+	}
+	var closeErr error
+	for _, child := range children {
+		closeErr = errors.Join(closeErr, child.Close())
+	}
+	children = nil
+	if closeErr != nil {
+		return closeErr
+	}
+	published, err := publishSplit(s.directory)
+	if err != nil {
+		if published {
+			s.splitFailure = err
+		}
+		return err
+	}
+	if err := s.loadSubStores(); err != nil {
+		s.splitFailure = err
+		return err
 	}
 
 	// Mark current store as read-only
@@ -211,6 +266,9 @@ func (s *StarLSM) split(hashedKey string) error {
 func (s *StarLSM) Get(key []byte) ([]byte, error) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
+	if err := s.available(); err != nil {
+		return nil, err
+	}
 
 	hashedKey := s.hashKey(key)
 
@@ -219,20 +277,21 @@ func (s *StarLSM) Get(key []byte) ([]byte, error) {
 	if subStore, exists := s.subStores[prefix]; exists {
 		return subStore.Get(key)
 	}
-
-	// Then check current store
-	value, err := s.currentStore.Get(key)
-	if err == nil {
-		return value, nil
+	if s.isReadOnly {
+		return nil, fmt.Errorf("StarLSM store %s is missing committed child %s", s.directory, prefix)
 	}
 
-	return nil, fmt.Errorf("key not found")
+	// Then check current store
+	return s.currentStore.Get(key)
 }
 
 // Delete removes a key-value pair
 func (s *StarLSM) Delete(key []byte) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	if err := s.available(); err != nil {
+		return err
+	}
 
 	hashedKey := s.hashKey(key)
 
@@ -252,6 +311,9 @@ func (s *StarLSM) Delete(key []byte) error {
 func (s *StarLSM) Exists(key []byte) bool {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
+	if s.available() != nil {
+		return false
+	}
 
 	hashedKey := s.hashKey(key)
 
@@ -259,6 +321,9 @@ func (s *StarLSM) Exists(key []byte) bool {
 	prefix := s.getPrefixAtDepth(hashedKey, s.depth)
 	if subStore, exists := s.subStores[prefix]; exists {
 		return subStore.Exists(key)
+	}
+	if s.isReadOnly {
+		return false
 	}
 
 	// Then current store
@@ -271,29 +336,21 @@ func (s *StarLSM) Exists(key []byte) bool {
 
 // loadSubStores scans for and loads existing substores
 func (s *StarLSM) loadSubStores() error {
-	entries, err := os.ReadDir(s.directory)
+	path, err := inspectSplit(s.directory, s.splitLayout())
 	if err != nil {
-		return fmt.Errorf("failed to read directory: %w", err)
+		return err
 	}
-
-	for _, entry := range entries {
-		if entry.IsDir() && len(entry.Name()) == 1 && isHexString(entry.Name()) {
-			prefix := s.prefix + entry.Name()
-			subStore, err := newStarLSM(
-				filepath.Join(s.directory, entry.Name()),
-				s.blockSize,
-				s.fileSize,
-				s.createStore,
-				s,
-				prefix,
-				s.depth+1,
-			)
-			if err != nil {
-				return fmt.Errorf("failed to load substore %s: %w", entry.Name(), err)
-			}
-
-			s.subStores[prefix] = subStore
+	if path == "" {
+		return nil
+	}
+	for partition := 0; partition < 16; partition++ {
+		prefix := fmt.Sprintf("%s%x", s.prefix, partition)
+		childPath := filepath.Join(path, splitChildName("star", s.prefix, partition))
+		subStore, err := newStarLSM(childPath, s.blockSize, s.fileSize, s.createStore, s, prefix, s.depth+1)
+		if err != nil {
+			return fmt.Errorf("failed to load substore %s: %w", childPath, err)
 		}
+		s.subStores[prefix] = subStore
 	}
 
 	return nil
@@ -303,6 +360,9 @@ func (s *StarLSM) loadSubStores() error {
 func (s *StarLSM) Flush() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	if err := s.available(); err != nil {
+		return err
+	}
 
 	if err := s.currentStore.Flush(); err != nil {
 		return err
@@ -322,16 +382,28 @@ func (s *StarLSM) Close() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	if err := s.currentStore.Close(); err != nil {
-		return err
+	if s.closed {
+		return nil
 	}
-
+	s.closed = true
+	err := s.currentStore.Close()
 	for _, subStore := range s.subStores {
-		if err := subStore.Close(); err != nil {
-			return err
-		}
+		err = errors.Join(err, subStore.Close())
 	}
+	return err
+}
 
+func (s *StarLSM) splitLayout() splitLayout {
+	return splitLayout{Version: 1, Kind: "star", Prefix: s.prefix, Depth: s.depth}
+}
+
+func (s *StarLSM) available() error {
+	if s.closed {
+		return fmt.Errorf("StarLSM store %s is closed", s.directory)
+	}
+	if s.splitFailure != nil {
+		return fmt.Errorf("StarLSM store %s needs reopening after split publication failed: %w", s.directory, s.splitFailure)
+	}
 	return nil
 }
 
