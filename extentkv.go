@@ -672,7 +672,6 @@ func (s *ExtentKeyValStore) readIndexAt(indexFile *os.File, cache []byte, offset
 	if EnableIndexCaching && cache != nil {
 		if offset < 0 || offset+8 > int64(len(cache)) {
 			panic(fmt.Sprintf("index cache read out of bounds: offset=%d, len=%d", offset, len(cache)))
-			return fmt.Errorf("index cache read out of bounds: offset=%d, len=%d", offset, len(cache))
 		}
 		return binary.Read(bytes.NewReader(cache[offset:offset+8]), binary.BigEndian, data)
 	}
@@ -932,7 +931,6 @@ func (s *ExtentKeyValStore) readDataAtIndexPos(indexPosition int64, indexFile *o
 
 	if indexPosition+16 > indexFileLength {
 		panic(fmt.Sprintf("attempt to read past end of file: offset=%d, index file length len=%d.  Last index is the seocnd last pointer(len-16), not the last pointer(len-8)", indexPosition, indexFileLength))
-		return nil, false, 0, 0, fmt.Errorf("extentkv.readDataAtIndexPos: invalid index position %v greater than indexfile of length %v", indexPosition, indexFileLength)
 	}
 
 	_, err = indexFile.Seek(indexPosition, 0)
