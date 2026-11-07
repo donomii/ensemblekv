@@ -124,6 +124,11 @@ func NewLinelsm(
 
 	// Load or initialize metadata
 	if err := store.loadMetadata(); err != nil {
+		for _, tier := range store.tiers {
+			for _, backingStore := range tier {
+				backingStore.Close()
+			}
+		}
 		return nil, fmt.Errorf("failed to load metadata: %w", err)
 	}
 
@@ -139,12 +144,20 @@ func (l *Linelsm) getOrCreateActiveStore(tier int) (KvLike, error) {
 	}
 
 	if len(l.tiers[tier]) == 0 {
-		storePath := filepath.Join(l.directory, fmt.Sprintf("tier-%d-store-%d", tier, time.Now().UnixNano()))
+		storeID := fmt.Sprintf("tier-%d-store-%d", tier, time.Now().UnixNano())
+		storePath := filepath.Join(l.directory, storeID)
 		newStore, err := l.createStore(storePath, l.blockSize, l.fileSize)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create store: %w", err)
 		}
 		l.tiers[tier] = append(l.tiers[tier], newStore)
+		l.metadata.Tiers[tier].StoreIds = append(l.metadata.Tiers[tier].StoreIds, storeID)
+		if err := l.saveMetadata(); err != nil {
+			l.tiers[tier] = nil
+			l.metadata.Tiers[tier].StoreIds = nil
+			newStore.Close()
+			return nil, fmt.Errorf("failed to save new tier %d store metadata: %w", tier, err)
+		}
 	}
 	return l.tiers[tier][0], nil
 }
@@ -163,18 +176,18 @@ func (l *Linelsm) Put(key, value []byte) error {
 		return fmt.Errorf("failed to get active store: %w", err)
 	}
 
+	// Store with data prefix.
+	dataKey := append([]byte(dataPrefix), key...)
+	if err := activeStore.Put(dataKey, value); err != nil {
+		return fmt.Errorf("failed to put data: %w", err)
+	}
+
 	// Remove any existing tombstone when putting new data.
 	tombstoneKey := append([]byte(tombstonePrefix), key...)
 	if activeStore.Exists(tombstoneKey) {
 		if err := activeStore.Delete(tombstoneKey); err != nil {
 			return fmt.Errorf("failed to remove tombstone: %w", err)
 		}
-	}
-
-	// Store with data prefix.
-	dataKey := append([]byte(dataPrefix), key...)
-	if err := activeStore.Put(dataKey, value); err != nil {
-		return fmt.Errorf("failed to put data: %w", err)
 	}
 
 	// Check if we need to trigger a flush on Tier 0.
@@ -197,40 +210,22 @@ func (l *Linelsm) Get(key []byte) ([]byte, error) {
 	dataKey := append([]byte(dataPrefix), key...)
 	tombstoneKey := append([]byte(tombstonePrefix), key...)
 
-	var latestValue []byte
-	var foundValue bool
-	var tombstoneFound bool
-
 	// Search through all tiers from newest to oldest.
 	for i := 0; i < len(l.tiers); i++ {
 		for _, store := range l.tiers[i] {
 			// Check for tombstone.
 			if store.Exists(tombstoneKey) {
-				tombstoneFound = true
-				break
+				return nil, fmt.Errorf("key %q deleted", key)
 			}
 
-			// Look for value if we haven't found one yet.
-			if !foundValue {
-				if value, err := store.Get(dataKey); err == nil {
-					latestValue = value
-					foundValue = true
-					break
-				}
+			// The first value is newer than entries in the remaining tiers.
+			if store.Exists(dataKey) {
+				return store.Get(dataKey)
 			}
-		}
-
-		// If a tombstone is found, consider the key deleted.
-		if tombstoneFound {
-			return nil, fmt.Errorf("key deleted")
 		}
 	}
 
-	if !foundValue {
-		return nil, fmt.Errorf("key not found")
-	}
-
-	return latestValue, nil
+	return nil, fmt.Errorf("key %q not found", key)
 }
 
 // Delete marks a key as deleted by inserting a tombstone.
@@ -247,7 +242,7 @@ func (l *Linelsm) Delete(key []byte) error {
 
 	// Insert tombstone.
 	tombstoneKey := append([]byte(tombstonePrefix), key...)
-	if err := activeStore.Put(tombstoneKey, nil); err != nil {
+	if err := activeStore.Put(tombstoneKey, []byte{1}); err != nil {
 		return fmt.Errorf("failed to put tombstone: %w", err)
 	}
 
@@ -263,8 +258,8 @@ func (l *Linelsm) Delete(key []byte) error {
 
 // Exists checks if a key exists and is not tombstoned.
 func (l *Linelsm) Exists(key []byte) bool {
-	data, err := l.Get(key)
-	return err == nil && data != nil
+	_, err := l.Get(key)
+	return err == nil
 }
 
 // Flush triggers an immediate flush (merge) of all tiers.
@@ -277,18 +272,24 @@ func (l *Linelsm) Flush() error {
 			return fmt.Errorf("failed to flush tier %d: %w", tier, err)
 		}
 	}
+	for _, tier := range l.tiers {
+		for _, store := range tier {
+			if err := store.Flush(); err != nil {
+				return fmt.Errorf("failed to flush backing store: %w", err)
+			}
+		}
+	}
 	return nil
 }
 
 func (l *Linelsm) Keys() [][]byte {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
+	l.mutex.RLock()
+	defer l.mutex.RUnlock()
 
 	keys := make([][]byte, 0)
-	for tier := 0; tier < len(l.tiers); tier++ {
-		for _, store := range l.tiers[tier] {
-			subKeys := store.Keys()
-			keys = append(keys, subKeys...)
+	for key, exists := range l.keyStates() {
+		if exists {
+			keys = append(keys, []byte(key))
 		}
 	}
 
@@ -311,7 +312,7 @@ func (l *Linelsm) shouldFlushTier(tier int) bool {
 
 // flushTier merges data from the given tier into the next tier.
 func (l *Linelsm) flushTier(tier int) error {
-	if tier+1 >= len(l.tiers) {
+	if tier+1 >= len(l.tiers) || len(l.tiers[tier]) == 0 {
 		return nil // No higher tier to flush into.
 	}
 
@@ -322,26 +323,34 @@ func (l *Linelsm) flushTier(tier int) error {
 	}
 
 	// Merge all stores in the current tier into the next tier.
-	for _, store := range l.tiers[tier] {
-		if err := l.mergeStore(store, nextTierStore); err != nil {
+	for index := len(l.tiers[tier]) - 1; index >= 0; index-- {
+		if err := l.mergeStore(l.tiers[tier][index], nextTierStore); err != nil {
 			return fmt.Errorf("failed to merge store: %w", err)
 		}
 	}
-
-	// Close and clean up old stores.
-	for _, store := range l.tiers[tier] {
-		if err := store.Close(); err != nil {
-			return fmt.Errorf("failed to close store: %w", err)
-		}
+	if err := nextTierStore.Flush(); err != nil {
+		return fmt.Errorf("failed to flush merged store: %w", err)
 	}
 
-	// Clear the current tier.
-	l.tiers[tier] = nil
+	oldStoreIDs := l.metadata.Tiers[tier].StoreIds
+	l.metadata.Tiers[tier].StoreIds = nil
 
 	// Update metadata.
 	l.metadata.LastFlush = time.Now()
 	if err := l.saveMetadata(); err != nil {
+		l.metadata.Tiers[tier].StoreIds = oldStoreIDs
 		return fmt.Errorf("failed to save metadata: %w", err)
+	}
+
+	// Clear the current tier.
+	oldStores := l.tiers[tier]
+	l.tiers[tier] = nil
+
+	// Close and clean up old stores.
+	for _, store := range oldStores {
+		if err := store.Close(); err != nil {
+			return fmt.Errorf("failed to close store: %w", err)
+		}
 	}
 
 	return nil
@@ -374,7 +383,15 @@ func (l *Linelsm) mergeStore(from, to KvLike) error {
 			// Only copy data if the key wasn't tombstoned.
 			if !processedKeys[originalKey] {
 				processedKeys[originalKey] = true
-				return to.Put(k, v)
+				if err := to.Put(k, v); err != nil {
+					return err
+				}
+				tombstoneKey := []byte(tombstonePrefix + originalKey)
+				if to.Exists(tombstoneKey) {
+					if err := to.Delete(tombstoneKey); err != nil {
+						return fmt.Errorf("failed to remove destination tombstone for %q: %w", originalKey, err)
+					}
+				}
 			}
 		}
 		return nil
@@ -386,21 +403,53 @@ func (l *Linelsm) mergeStore(from, to KvLike) error {
 // MapFunc applies a function to every key-value pair in all tiers.
 func (l *Linelsm) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
 	l.mutex.RLock()
-	defer l.mutex.RUnlock()
+	states := l.keyStates()
+	l.mutex.RUnlock()
 
 	visited := make(map[string]bool)
-	for _, tier := range l.tiers {
-		for _, store := range tier {
-			_, err := store.MapFunc(func(k, v []byte) error {
-				visited[string(k)] = true
-				return f(k, v)
-			})
-			if err != nil {
-				return nil, err
-			}
+	for key, exists := range states {
+		if !exists {
+			visited[key] = false
+			continue
+		}
+		value, err := l.Get([]byte(key))
+		if err != nil {
+			return visited, err
+		}
+		visited[key] = true
+		if err := f([]byte(key), value); err != nil {
+			return visited, err
 		}
 	}
 	return visited, nil
+}
+
+func (l *Linelsm) keyStates() map[string]bool {
+	visited := make(map[string]bool)
+	for _, tier := range l.tiers {
+		for _, store := range tier {
+			keys := store.Keys()
+			for _, key := range keys {
+				if strings.HasPrefix(string(key), tombstonePrefix) {
+					originalKey := string(key[len(tombstonePrefix):])
+					if _, exists := visited[originalKey]; !exists {
+						visited[originalKey] = false
+					}
+				}
+			}
+			for _, k := range keys {
+				if !strings.HasPrefix(string(k), dataPrefix) {
+					continue
+				}
+				key := k[len(dataPrefix):]
+				if _, exists := visited[string(key)]; exists {
+					continue
+				}
+				visited[string(key)] = true
+			}
+		}
+	}
+	return visited
 }
 
 // loadMetadata reads the store metadata from disk.
@@ -409,10 +458,17 @@ func (l *Linelsm) loadMetadata() error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			if err := l.checkUnreferencedStores(); err != nil {
+				return err
+			}
 			// Initialize new metadata.
 			l.metadata = StoreMetadata{
+				Tiers:        make([]TierMetadata, len(l.tiers)),
 				MaxTierSizes: l.maxTierSizes,
 				LastFlush:    time.Now(),
+			}
+			for level := range l.metadata.Tiers {
+				l.metadata.Tiers[level].Level = level
 			}
 			return nil
 		}
@@ -422,7 +478,60 @@ func (l *Linelsm) loadMetadata() error {
 	if err := json.Unmarshal(data, &l.metadata); err != nil {
 		return fmt.Errorf("failed to unmarshal metadata: %w", err)
 	}
+	if len(l.metadata.Tiers) == 0 {
+		if err := l.checkUnreferencedStores(); err != nil {
+			return err
+		}
+	}
+	loadedTiers := l.metadata.Tiers
+	l.metadata.Tiers = make([]TierMetadata, len(l.tiers))
+	for level := range l.metadata.Tiers {
+		l.metadata.Tiers[level].Level = level
+	}
+	seenLevels := make(map[int]bool)
+	seenStores := make(map[string]bool)
+	for _, tier := range loadedTiers {
+		if tier.Level < 0 || tier.Level >= len(l.tiers) {
+			return fmt.Errorf("invalid tier level %d; expected 0 through %d", tier.Level, len(l.tiers)-1)
+		}
+		if seenLevels[tier.Level] {
+			return fmt.Errorf("duplicate tier level %d in metadata", tier.Level)
+		}
+		seenLevels[tier.Level] = true
+		for _, storeID := range tier.StoreIds {
+			if filepath.Base(storeID) != storeID || !strings.HasPrefix(storeID, fmt.Sprintf("tier-%d-store-", tier.Level)) {
+				return fmt.Errorf("invalid store ID %q for tier %d", storeID, tier.Level)
+			}
+			if seenStores[storeID] {
+				return fmt.Errorf("duplicate store ID %q in metadata", storeID)
+			}
+			seenStores[storeID] = true
+			storePath := filepath.Join(l.directory, storeID)
+			if _, err := os.Stat(storePath); err != nil {
+				return fmt.Errorf("failed to find tier %d store %q: %w", tier.Level, storeID, err)
+			}
+			store, err := l.createStore(storePath, l.blockSize, l.fileSize)
+			if err != nil {
+				return fmt.Errorf("failed to open tier %d store %q: %w", tier.Level, storeID, err)
+			}
+			l.tiers[tier.Level] = append(l.tiers[tier.Level], store)
+		}
+		l.metadata.Tiers[tier.Level] = tier
+	}
 
+	return nil
+}
+
+func (l *Linelsm) checkUnreferencedStores() error {
+	entries, err := os.ReadDir(l.directory)
+	if err != nil {
+		return fmt.Errorf("failed to inspect tier directories: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "tier-") {
+			return fmt.Errorf("tier directory %q exists without tier references in %q", entry.Name(), filepath.Join(l.directory, metadataFile))
+		}
+	}
 	return nil
 }
 
@@ -434,7 +543,34 @@ func (l *Linelsm) saveMetadata() error {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
 
-	return os.WriteFile(path, data, 0644)
+	temporaryPath := path + ".tmp"
+	file, err := os.OpenFile(temporaryPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to create metadata file %q: %w", temporaryPath, err)
+	}
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return fmt.Errorf("failed to write metadata file %q: %w", temporaryPath, err)
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return fmt.Errorf("failed to sync metadata file %q: %w", temporaryPath, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("failed to close metadata file %q: %w", temporaryPath, err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("failed to replace metadata file %q: %w", path, err)
+	}
+	directory, err := os.Open(l.directory)
+	if err != nil {
+		return fmt.Errorf("failed to open metadata directory %q: %w", l.directory, err)
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return fmt.Errorf("failed to sync metadata directory %q: %w", l.directory, err)
+	}
+	return nil
 }
 
 // Close shuts down the store gracefully by flushing all tiers,
@@ -501,39 +637,17 @@ func (l *Linelsm) KeyHistory(key []byte) ([][]byte, error) {
 }
 
 func (l *Linelsm) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
-	l.mutex.RLock()
-	defer l.mutex.RUnlock()
-
 	keys := make(map[string]bool)
-
-	// Linelsm stores keys with data prefix "d:", so we need to handle this
-	dataPrefixedKey := append([]byte(dataPrefix), prefix...)
-
-	// Check all tiers
-	for _, tier := range l.tiers {
-		for _, store := range tier {
-			subKeys, err := store.MapPrefixFunc(dataPrefixedKey, func(k, v []byte) error {
-				// Remove the data prefix to get original key
-				if len(k) > len(dataPrefix) {
-					originalKey := k[len(dataPrefix):]
-					keys[string(originalKey)] = true
-					return f(originalKey, v)
-				}
-				return nil
-			})
-			if err != nil {
-				return keys, err
-			}
-			// Merge sub keys (though we already processed them above)
-			for k, v := range subKeys {
-				// Remove data prefix for the key map
-				if strings.HasPrefix(k, dataPrefix) {
-					originalKey := strings.TrimPrefix(k, dataPrefix)
-					keys[originalKey] = v
-				}
-			}
+	visited, err := l.MapFunc(func(key, value []byte) error {
+		if strings.HasPrefix(string(key), string(prefix)) {
+			return f(key, value)
+		}
+		return nil
+	})
+	for key, exists := range visited {
+		if strings.HasPrefix(key, string(prefix)) {
+			keys[key] = exists
 		}
 	}
-
-	return keys, nil
+	return keys, err
 }
