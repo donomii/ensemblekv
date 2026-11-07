@@ -82,6 +82,9 @@ func (t *TreeLSM) getPrefixForKey(hashedKey string) string {
 	if len(hashedKey) == 0 {
 		return "0"
 	}
+	if t.level >= int64(len(hashedKey)) {
+		return hashedKey
+	}
 	return hashedKey[:t.level+1]
 }
 
@@ -129,6 +132,9 @@ func (t *TreeLSM) Keys() [][]byte {
 	defer t.mutex.RUnlock()
 
 	var keys [][]byte
+	if !t.isReadOnly {
+		return t.currentStore.Keys()
+	}
 	for _, subStore := range t.subStores {
 		subKeys := subStore.Keys()
 		keys = append(keys, subKeys...)
@@ -198,10 +204,7 @@ func (t *TreeLSM) Get(key []byte) ([]byte, error) {
 	prefix := t.getPrefixForKey(hashedKey)
 	if subStore, exists := t.subStores[prefix]; exists {
 		debugf("TreeLSM: Get: %s, substore exists for prefix: %s", t.hashKey(key), prefix)
-		value, err := subStore.Get(key)
-		if err == nil {
-			return value, nil
-		}
+		return subStore.Get(key)
 	}
 
 	debugf("TreeLSM: Get: %s, key not found in substores for prefix %s", t.hashKey(key), prefix)
@@ -218,6 +221,9 @@ func (t *TreeLSM) Get(key []byte) ([]byte, error) {
 // split creates substores and redistributes data
 func (t *TreeLSM) split() error {
 	debugf("Splitting store %s into substores\n", t.directory)
+	if t.level >= 16 {
+		return fmt.Errorf("cannot split store %q beyond the 16-character hash", t.directory)
+	}
 	// Create subdirectories for each hex prefix
 	for i := 0; i < 16; i++ {
 		p := fmt.Sprintf("%s%x", t.prefix, i)
@@ -280,9 +286,7 @@ func (t *TreeLSM) Exists(key []byte) bool {
 	// Check substores first
 	prefix := t.getPrefixForKey(hashedKey)
 	if subStore, exists := t.subStores[prefix]; exists {
-		if subStore.Exists(key) {
-			return true
-		}
+		return subStore.Exists(key)
 	}
 
 	// Then current store
@@ -305,7 +309,15 @@ func (t *TreeLSM) loadSubStores() error {
 
 	for _, entry := range entries {
 		if entry.IsDir() && strings.HasPrefix(entry.Name(), "substore_") {
-			prefix := strings.TrimPrefix(entry.Name(), "substore_")
+			encodedPrefix := strings.TrimPrefix(entry.Name(), "substore_")
+			decodedPrefix, err := hex.DecodeString(encodedPrefix)
+			if err != nil {
+				return fmt.Errorf("invalid substore directory %q: %w", entry.Name(), err)
+			}
+			prefix := string(decodedPrefix)
+			if len(prefix) != int(t.level+1) || !isHexString(prefix) {
+				return fmt.Errorf("invalid substore prefix %q at level %d", prefix, t.level)
+			}
 			subStore, err := NewTreeLSM(
 				filepath.Join(t.directory, entry.Name()),
 				t.blockSize,
@@ -326,8 +338,7 @@ func (t *TreeLSM) loadSubStores() error {
 
 // isHexString checks if a string is valid hex
 func isHexString(s string) bool {
-	_, err := hex.DecodeString(s)
-	return err == nil
+	return s != "" && strings.Trim(s, "0123456789abcdef") == ""
 }
 
 // Flush ensures all data is written to disk
@@ -383,24 +394,15 @@ func (t *TreeLSM) Size() int64 {
 
 // MapFunc applies a function to all key-value pairs
 func (t *TreeLSM) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
-	t.mutex.RLock()
-	defer t.mutex.RUnlock()
-
-	// Start with current store
-	visited, err := t.currentStore.MapFunc(f)
-	if err != nil {
-		return nil, err
-	}
-
-	// Then process substores
-	for _, subStore := range t.subStores {
-		subVisited, err := subStore.MapFunc(f)
+	visited := make(map[string]bool)
+	for _, key := range t.Keys() {
+		value, err := t.Get(key)
 		if err != nil {
-			return nil, err
+			return visited, err
 		}
-		// Merge visited maps
-		for k, v := range subVisited {
-			visited[k] = v
+		visited[string(key)] = true
+		if err := f(key, value); err != nil {
+			return visited, err
 		}
 	}
 
@@ -408,31 +410,14 @@ func (t *TreeLSM) MapFunc(f func([]byte, []byte) error) (map[string]bool, error)
 }
 
 func (t *TreeLSM) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
-	t.mutex.RLock()
-	defer t.mutex.RUnlock()
-
 	keys := make(map[string]bool)
-
-	// Start with current store
-	subKeys, err := t.currentStore.MapPrefixFunc(prefix, f)
-	if err != nil {
-		return keys, err
-	}
-	for k, v := range subKeys {
-		keys[k] = v
-	}
-
-	// Then process substores
-	for _, subStore := range t.subStores {
-		subKeys, err := subStore.MapPrefixFunc(prefix, f)
-		if err != nil {
-			return keys, err
+	_, err := t.MapFunc(func(key, value []byte) error {
+		if strings.HasPrefix(string(key), string(prefix)) {
+			keys[string(key)] = true
+			return f(key, value)
 		}
-		// Merge visited maps
-		for k, v := range subKeys {
-			keys[k] = v
-		}
-	}
+		return nil
+	})
 
-	return keys, nil
+	return keys, err
 }
