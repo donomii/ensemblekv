@@ -21,6 +21,8 @@ import (
 
 type CreatorFunc func(directory string, blockSize, fileSize int64) (KvLike, error)
 
+var errKeyNotFound = errors.New("key not found")
+
 // ExtentKeyValueStore is a key-value store that uses a single storage file and an index file to store data.  It can ingest a large amount of data at close to the maximum transfer speed of the drive, and still have reasonable performance.  Deletes do not recover disk space, compaction is required.
 func ExtentCreator(directory string, blockSize, fileSize int64) (KvLike, error) {
 	return NewExtentKeyValueStore(directory, blockSize, fileSize)
@@ -222,22 +224,11 @@ func (s *nuDbShim) Get(key []byte) ([]byte, error) {
 }
 
 func (s *nuDbShim) Keys() [][]byte {
-
-	var keys [][]byte
 	panic("not implemented")
-	return keys
 }
 
 func (s *nuDbShim) Put(key []byte, val []byte) error {
-	err := s.dbHandle.Insert(string(key), val)
-	if err != nil {
-		if errors.Is(err, nudb.ErrKeyExists) {
-
-		} else {
-			return err
-		}
-	}
-	return nil
+	return s.dbHandle.Insert(string(key), val)
 }
 
 func (s *nuDbShim) Exists(key []byte) bool {
@@ -350,7 +341,7 @@ func (s *BoltDbShim) Keys() [][]byte {
 func (s *BoltDbShim) Get(key []byte) ([]byte, error) {
 	var out []byte = nil
 	var exists bool = false
-	s.boltHandle.View(func(tx *bolt.Tx) error {
+	err := s.boltHandle.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("Blocks"))
 		v := b.Get(key)
 		if v == nil {
@@ -362,12 +353,15 @@ func (s *BoltDbShim) Get(key []byte) ([]byte, error) {
 		copy(out, v)
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 	if !exists {
-		return nil, fmt.Errorf("key not found")
+		return nil, errKeyNotFound
 	}
 
 	if out == nil {
-		return nil, fmt.Errorf("key not found")
+		return nil, errKeyNotFound
 	}
 
 	return out, nil
@@ -381,12 +375,11 @@ func (s *BoltDbShim) Put(key []byte, val []byte) error {
 		return fmt.Errorf("Key size too large: %v", len(key))
 	}
 
-	s.boltHandle.Update(func(tx *bolt.Tx) error {
+	return s.boltHandle.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("Blocks"))
 		err := b.Put(key, val)
 		return err
 	})
-	return nil
 }
 
 func (s *BoltDbShim) Exists(key []byte) bool {
@@ -401,12 +394,11 @@ func (s *BoltDbShim) Exists(key []byte) bool {
 }
 
 func (s *BoltDbShim) Delete(key []byte) error {
-	s.boltHandle.Update(func(tx *bolt.Tx) error {
+	return s.boltHandle.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("Blocks"))
 		err := b.Delete(key)
 		return err
 	})
-	return nil
 }
 
 func (s *BoltDbShim) Flush() error {
@@ -419,17 +411,22 @@ func (s *BoltDbShim) Close() error {
 
 func (s *BoltDbShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, error) {
 	seenKeys := make(map[string]bool)
-	keys := s.Keys()
+	keys, err := s.List()
+	if err != nil {
+		return seenKeys, err
+	}
 
-	for _, k := range keys {
-		var v []byte
-		s.boltHandle.View(func(tx *bolt.Tx) error {
-			b := tx.Bucket([]byte("Blocks"))
-			v = b.Get(k)
-			return nil
-		})
+	for _, key := range keys {
+		k := []byte(key)
+		v, err := s.Get(k)
+		if errors.Is(err, errKeyNotFound) {
+			continue
+		}
+		if err != nil {
+			return seenKeys, err
+		}
 		seenKeys[string(k)] = true
-		err := f(k, v)
+		err = f(k, v)
 		if err != nil {
 			return seenKeys, err
 		}
@@ -439,7 +436,7 @@ func (s *BoltDbShim) MapFunc(f func([]byte, []byte) error) (map[string]bool, err
 
 func (s *BoltDbShim) List() ([]string, error) {
 	keys := []string{}
-	s.boltHandle.View(func(tx *bolt.Tx) error {
+	err := s.boltHandle.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("Blocks"))
 		c := b.Cursor()
 		for k, _ := c.First(); k != nil; k, _ = c.Next() {
@@ -447,7 +444,7 @@ func (s *BoltDbShim) List() ([]string, error) {
 		}
 		return nil
 	})
-	return keys, nil
+	return keys, err
 }
 
 func (s *BoltDbShim) Size() int64 {
@@ -465,20 +462,25 @@ func (s *BoltDbShim) Size() int64 {
 
 func (s *BoltDbShim) MapPrefixFunc(prefix []byte, f func([]byte, []byte) error) (map[string]bool, error) {
 	seenKeys := make(map[string]bool)
-	keys := s.Keys()
+	keys, err := s.List()
+	if err != nil {
+		return seenKeys, err
+	}
 
-	for _, k := range keys {
+	for _, key := range keys {
+		k := []byte(key)
 		if !bytes.HasPrefix(k, prefix) {
 			continue
 		}
-		var v []byte
-		s.boltHandle.View(func(tx *bolt.Tx) error {
-			b := tx.Bucket([]byte("Blocks"))
-			v = b.Get(k)
-			return nil
-		})
+		v, err := s.Get(k)
+		if errors.Is(err, errKeyNotFound) {
+			continue
+		}
+		if err != nil {
+			return seenKeys, err
+		}
 		seenKeys[string(k)] = true
-		err := f(k, v)
+		err = f(k, v)
 		if err != nil {
 			return seenKeys, err
 		}
@@ -523,9 +525,7 @@ func (s *PudgeShim) KeyHistory(key []byte) ([][]byte, error) {
 }
 
 func (s *PudgeShim) Keys() [][]byte {
-	var keys [][]byte
 	panic("not implemented")
-	return keys
 }
 
 // Get implements KvLike interface
@@ -695,9 +695,7 @@ func (s *S3Shim) Get(key []byte) ([]byte, error) {
 }
 
 func (s *S3Shim) Keys() [][]byte {
-	var keys [][]byte
 	panic("not implemented")
-	return keys
 }
 
 func (s *S3Shim) Put(key []byte, val []byte) error {
