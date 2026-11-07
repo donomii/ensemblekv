@@ -223,9 +223,7 @@ func (s *nuDbShim) Get(key []byte) ([]byte, error) {
 
 func (s *nuDbShim) Keys() [][]byte {
 
-	var keys [][]byte
 	panic("not implemented")
-	return keys
 }
 
 func (s *nuDbShim) Put(key []byte, val []byte) error {
@@ -523,9 +521,7 @@ func (s *PudgeShim) KeyHistory(key []byte) ([][]byte, error) {
 }
 
 func (s *PudgeShim) Keys() [][]byte {
-	var keys [][]byte
 	panic("not implemented")
-	return keys
 }
 
 // Get implements KvLike interface
@@ -695,9 +691,7 @@ func (s *S3Shim) Get(key []byte) ([]byte, error) {
 }
 
 func (s *S3Shim) Keys() [][]byte {
-	var keys [][]byte
 	panic("not implemented")
-	return keys
 }
 
 func (s *S3Shim) Put(key []byte, val []byte) error {
