@@ -109,7 +109,7 @@ func (index *diskKeyIndex) collect(store KvLike) (result error) {
 		}
 		records++
 		bytesWritten += len(key)
-		if records >= 128 || bytesWritten >= 1<<20 {
+		if records >= 32 || bytesWritten >= 1<<18 {
 			err := tx.Commit()
 			tx = nil
 			if err != nil {
