@@ -1,10 +1,12 @@
 package ensemblekv
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -15,6 +17,11 @@ type JsonKV struct {
 	filename string
 	data     map[string][]byte
 	mutex    sync.RWMutex
+}
+
+type jsonKVEntry struct {
+	Key   []byte `json:"key"`
+	Value []byte `json:"value"`
 }
 
 // NewJsonKV creates a new JSON key-value store
@@ -46,10 +53,26 @@ func (s *JsonKV) load() error {
 		return err
 	}
 
-	// Create temporary map for string-based storage
 	tempMap := make(map[string][]byte)
-	if err := json.Unmarshal(data, &tempMap); err != nil {
-		return fmt.Errorf("failed to unmarshal data: %w", err)
+	if bytes.HasPrefix(bytes.TrimSpace(data), []byte("[")) {
+		var entries []jsonKVEntry
+		if err := json.Unmarshal(data, &entries); err != nil {
+			return fmt.Errorf("failed to unmarshal entries: %w", err)
+		}
+		for _, entry := range entries {
+			key := string(entry.Key)
+			if _, exists := tempMap[key]; exists {
+				return fmt.Errorf("duplicate JSON store key %x", entry.Key)
+			}
+			tempMap[key] = entry.Value
+		}
+	} else {
+		if err := json.Unmarshal(data, &tempMap); err != nil {
+			return fmt.Errorf("failed to unmarshal data: %w", err)
+		}
+		if tempMap == nil {
+			return fmt.Errorf("invalid JSON store: expected an object or an array of entries, got null")
+		}
 	}
 
 	s.data = tempMap
@@ -59,13 +82,49 @@ func (s *JsonKV) load() error {
 
 // save writes the in-memory data to JSON file
 func (s *JsonKV) save() error {
-
-	data, err := json.MarshalIndent(s.data, "", "  ")
+	entries := make([]jsonKVEntry, 0, len(s.data))
+	for key, value := range s.data {
+		entries = append(entries, jsonKVEntry{Key: []byte(key), Value: value})
+	}
+	sort.Slice(entries, func(i, j int) bool { return bytes.Compare(entries[i].Key, entries[j].Key) < 0 })
+	data, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal data: %w", err)
 	}
 
-	return os.WriteFile(s.filename, data, 0644)
+	info, err := os.Stat(s.filename)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	file, err := os.CreateTemp(filepath.Dir(s.filename), ".store-*.json")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+	if info != nil {
+		if err := file.Chmod(info.Mode().Perm()); err != nil {
+			return err
+		}
+	}
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(file.Name(), s.filename); err != nil {
+		return err
+	}
+	directory, err := os.Open(filepath.Dir(s.filename))
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 
 // KeyHistory returns all values for a key, even if they are deleted
@@ -99,7 +158,7 @@ func (s *JsonKV) Get(key []byte) ([]byte, error) {
 	if !exists {
 		return nil, fmt.Errorf("key not found")
 	}
-	return value, nil
+	return bytes.Clone(value), nil
 }
 
 // Put stores a key-value pair
@@ -107,7 +166,7 @@ func (s *JsonKV) Put(key []byte, value []byte) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	s.data[string(key)] = value
+	s.data[string(key)] = bytes.Clone(value)
 	return s.save()
 }
 
