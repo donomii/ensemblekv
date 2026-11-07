@@ -205,12 +205,6 @@ func (lsm *SingleFileLSM) loadFromDisk() error {
 		return fmt.Errorf("failed to replay WAL: %w", err)
 	}
 
-	// Clear WAL after successful recovery
-	lsm.walSize = 0
-	if err := lsm.syncHeader(); err != nil {
-		return fmt.Errorf("failed to sync header after recovery: %w", err)
-	}
-
 	return nil
 }
 
@@ -333,6 +327,10 @@ func (lsm *SingleFileLSM) replayWAL() error {
 
 // readWALEntry reads a single WAL entry from the given offset
 func (lsm *SingleFileLSM) readWALEntry(offset int64) (*walEntry, int, error) {
+	if offset < lsm.walOffset || offset > lsm.sstableOffset-walEntryHeaderSize {
+		return nil, 0, fmt.Errorf("WAL header at offset %d exceeds region [%d, %d)", offset, lsm.walOffset, lsm.sstableOffset)
+	}
+
 	// Read header
 	headerBuf := make([]byte, walEntryHeaderSize)
 	if _, err := lsm.file.ReadAt(headerBuf, offset); err != nil {
@@ -352,6 +350,13 @@ func (lsm *SingleFileLSM) readWALEntry(offset int64) (*walEntry, int, error) {
 	}
 	if entry.valLen < -1 || entry.valLen > maxValueSize {
 		return nil, 0, fmt.Errorf("invalid value length: %d", entry.valLen)
+	}
+	entrySize := int64(walEntryHeaderSize) + entry.keyLen
+	if entry.valLen > 0 {
+		entrySize += entry.valLen
+	}
+	if entrySize > lsm.sstableOffset-offset {
+		return nil, 0, fmt.Errorf("WAL entry at offset %d needs %d bytes, only %d reserved bytes remain", offset, entrySize, lsm.sstableOffset-offset)
 	}
 
 	// Read key
@@ -565,6 +570,17 @@ func (lsm *SingleFileLSM) Delete(key []byte) error {
 
 // appendToWAL appends an entry to the write-ahead log
 func (lsm *SingleFileLSM) appendToWAL(key []byte, value []byte) error {
+	if len(key) == 0 || int64(len(key)) > maxKeySize {
+		return fmt.Errorf("invalid key length %d: expected 1 through %d bytes", len(key), maxKeySize)
+	}
+	if int64(len(value)) > maxValueSize {
+		return fmt.Errorf("invalid value length %d: maximum is %d bytes", len(value), maxValueSize)
+	}
+	entrySize := int64(walEntryHeaderSize) + int64(len(key)) + int64(len(value))
+	if err := lsm.ensureWALSpace(entrySize); err != nil {
+		return err
+	}
+
 	entry := &walEntry{
 		keyLen: int64(len(key)),
 		key:    key,
@@ -578,8 +594,10 @@ func (lsm *SingleFileLSM) appendToWAL(key []byte, value []byte) error {
 	}
 
 	// Compute checksum
-	checksumData := append(key, value...)
-	entry.checksum = uint64(crc32.ChecksumIEEE(checksumData))
+	checksum := crc32.NewIEEE()
+	checksum.Write(key)
+	checksum.Write(value)
+	entry.checksum = uint64(checksum.Sum32())
 
 	// Write header
 	headerBuf := make([]byte, walEntryHeaderSize)
@@ -589,7 +607,10 @@ func (lsm *SingleFileLSM) appendToWAL(key []byte, value []byte) error {
 	binary.LittleEndian.PutUint32(headerBuf[24:28], entry.flags)
 
 	offset := lsm.walOffset + lsm.walSize
-	if _, err := lsm.file.WriteAt(headerBuf, offset); err != nil {
+	// Persist the end marker and payload before publishing a header that exposes them to recovery.
+	endOffset := offset + entrySize
+	endMarker := make([]byte, min(int64(walEntryHeaderSize), lsm.sstableOffset-endOffset))
+	if _, err := lsm.file.WriteAt(endMarker, endOffset); err != nil {
 		return err
 	}
 
@@ -604,19 +625,59 @@ func (lsm *SingleFileLSM) appendToWAL(key []byte, value []byte) error {
 			return err
 		}
 	}
+	if err := lsm.file.Sync(); err != nil {
+		return err
+	}
+	if _, err := lsm.file.WriteAt(headerBuf, offset); err != nil {
+		return err
+	}
 
 	// Sync to disk (crash resistance)
 	if err := lsm.file.Sync(); err != nil {
 		return err
 	}
 
-	entrySize := int64(walEntryHeaderSize + len(key))
-	if value != nil {
-		entrySize += int64(len(value))
-	}
 	lsm.walSize += entrySize
 
 	return nil
+}
+
+func (lsm *SingleFileLSM) ensureWALSpace(entrySize int64) error {
+	capacity := lsm.sstableOffset - lsm.walOffset
+	if entrySize <= capacity-lsm.walSize {
+		return nil
+	}
+	if err := lsm.flushMemTable(); err != nil {
+		return fmt.Errorf("failed to flush full WAL: %w", err)
+	}
+	if entrySize <= capacity {
+		return nil
+	}
+
+	info, err := lsm.file.Stat()
+	if err != nil {
+		return err
+	}
+	oldWALOffset, oldSSTableOffset := lsm.walOffset, lsm.sstableOffset
+	newWALOffset := max(info.Size(), lsm.sstableOffset)
+	newSSTableOffset := newWALOffset + entrySize
+	if err := lsm.file.Truncate(newSSTableOffset); err != nil {
+		return fmt.Errorf("failed to reserve %d WAL bytes at offset %d: %w", entrySize, newWALOffset, err)
+	}
+	lsm.walOffset, lsm.sstableOffset = newWALOffset, newSSTableOffset
+	if err := lsm.syncHeader(); err != nil {
+		lsm.walOffset, lsm.sstableOffset = oldWALOffset, oldSSTableOffset
+		return err
+	}
+	return nil
+}
+
+func (lsm *SingleFileLSM) clearWAL() error {
+	zeros := make([]byte, min(int64(walEntryHeaderSize), lsm.walSize))
+	if _, err := lsm.file.WriteAt(zeros, lsm.walOffset); err != nil {
+		return fmt.Errorf("failed to invalidate WAL at offset %d: %w", lsm.walOffset, err)
+	}
+	return lsm.file.Sync()
 }
 
 // flushMemTable writes the memtable to a new SSTable
@@ -633,11 +694,11 @@ func (lsm *SingleFileLSM) flushMemTable() error {
 	sort.Strings(keys)
 
 	// Calculate SSTable offset
-	sstableStart := lsm.sstableOffset
-	if len(lsm.sstables) > 0 {
-		lastSSTable := &lsm.sstables[len(lsm.sstables)-1]
-		sstableStart = lastSSTable.offset + lastSSTable.size
+	info, err := lsm.file.Stat()
+	if err != nil {
+		return err
 	}
+	sstableStart := max(lsm.sstableOffset, info.Size())
 
 	// Write extents
 	offset := sstableStart
@@ -706,22 +767,30 @@ func (lsm *SingleFileLSM) flushMemTable() error {
 		checksum:   crc32.ChecksumIEEE(sstableData),
 	}
 
+	previousIndexOffset := lsm.indexOffset
 	lsm.sstables = append(lsm.sstables, meta)
 
 	// Update index
 	if err := lsm.writeIndex(); err != nil {
+		lsm.sstables = lsm.sstables[:len(lsm.sstables)-1]
+		lsm.indexOffset = previousIndexOffset
 		return err
 	}
-
-	// Clear memtable and WAL
-	lsm.memTable = make(map[string][]byte)
-	lsm.memTableSize = 0
-	lsm.walSize = 0
 
 	// Update header
 	if err := lsm.syncHeader(); err != nil {
+		lsm.sstables = lsm.sstables[:len(lsm.sstables)-1]
+		lsm.indexOffset = previousIndexOffset
 		return err
 	}
+
+	// Clear memtable and WAL only after the replacement index is durable.
+	if err := lsm.clearWAL(); err != nil {
+		return err
+	}
+	lsm.memTable = make(map[string][]byte)
+	lsm.memTableSize = 0
+	lsm.walSize = 0
 
 	return nil
 }
@@ -1007,8 +1076,8 @@ func (s *SingleFileLSM) Keys() [][]byte {
 
 	keysState := make(map[string]bool)
 
-	// Iterate SSTables from oldest to newest so newer entries win.
-	for i := 0; i < len(s.sstables); i++ {
+	// Visit newest SSTables first because iteration keeps the first version of each key.
+	for i := len(s.sstables) - 1; i >= 0; i-- {
 		meta := &s.sstables[i]
 		if err := s.iterateSSTable(meta, func(k, v []byte) error {
 			keysState[string(k)] = true
